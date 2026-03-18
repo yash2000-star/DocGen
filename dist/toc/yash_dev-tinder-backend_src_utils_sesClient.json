@@ -1,0 +1,37 @@
+[
+  {
+    "level": 1,
+    "text": "SES Client",
+    "id": "ses-client"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Parameters / Configuration",
+    "id": "parameters--configuration"
+  },
+  {
+    "level": 2,
+    "text": "SES Client Export",
+    "id": "ses-client-export"
+  },
+  {
+    "level": 3,
+    "text": "`sesClient`",
+    "id": "sesclient"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 2,
+    "text": "Common Errors / Troubleshooting",
+    "id": "common-errors--troubleshooting"
+  }
+]

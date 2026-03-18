@@ -1,0 +1,316 @@
+# Connection Request Routes
+
+This file defines the API routes for managing user connection requests within the application. It handles sending new requests, and reviewing (accepting or rejecting) existing requests between users.
+
+## Overview
+
+The `requests.js` module provides the core functionality for users to interact with each other's profiles by sending and managing connection requests. It leverages authentication middleware to secure its endpoints and interacts with the `User` and `ConnectionRequest` models for data persistence.
+
+<CardGroup cols={2}>
+  <Card title="Send Requests" icon="✉️">
+    Allows authenticated users to send an "interested" or "ignored" connection request to another user.
+  </Card>
+  <Card title="Review Requests" icon="✅">
+    Enables users to accept or reject incoming connection requests that they have received.
+  </Card>
+</CardGroup>
+
+## Parameters / Configuration
+
+This module primarily uses Express.js routing parameters. No global configuration objects are directly exposed by this file.
+
+## `POST /request/send/:status/:toUserId`
+
+Sends a new connection request from the authenticated user to a specified target user. The request includes an initial status indicating the sender's interest level.
+
+### Middleware
+
+*   `userAuth`: Ensures the user is authenticated and attaches their details (`req.user`) to the request. This middleware is defined in `src/middleware/auth.js`.
+
+### Path Parameters
+
+<ParamField name="status" type="string" required>
+  The initial status of the connection request.
+  <Expandable title="Allowed Values">
+    <Badge color="green">interested</Badge>: The sender is interested in connecting with the `toUserId`.
+    <Badge color="yellow">ignored</Badge>: The sender is choosing to ignore the `toUserId` for now (this can prevent future requests from this user to them).
+  </Expandable>
+</ParamField>
+
+<ParamField name="toUserId" type="string" required>
+  The unique identifier of the user to whom the connection request is being sent. This is typically the MongoDB `_id` of the target user.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string">
+  A descriptive message indicating the outcome of the request.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The newly created connection request object, as saved in the database.
+  <Expandable title="Connection Request Properties">
+    <ResponseField name="data._id" type="string">
+      The unique identifier for this connection request.
+    </ResponseField>
+    <ResponseField name="data.fromUserId" type="string">
+      The ID of the user who initiated the request.
+    </ResponseField>
+    <ResponseField name="data.toUserId" type="string">
+      The ID of the user who received the request.
+    </ResponseField>
+    <ResponseField name="data.status" type="string">
+      The current status of the request (e.g., "interested", "ignored").
+    </ResponseField>
+    <ResponseField name="data.createdAt" type="string">
+      Timestamp of when the request was created.
+    </ResponseField>
+    <ResponseField name="data.updatedAt" type="string">
+      Timestamp of when the request was last updated.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Error Responses
+
+<Warning>
+  Attempting to send a request when one already exists between the two users (in either direction) will result in a `400 Bad Request` to prevent duplicate entries.
+</Warning>
+
+<Danger>
+  Ensure that the `toUserId` is a valid and existing user ID in your database. An invalid ID will result in a `404 Not Found` error.
+</Danger>
+
+<ResponseField name="message" type="string" status="400 Bad Request">
+  If `status` is not "ignored" or "interested". Example: `Invalid status type: invalid_status`.
+</ResponseField>
+
+<ResponseField name="message" type="string" status="404 Not Found">
+  If `toUserId` does not correspond to an existing user. Example: `User not found!`.
+</ResponseField>
+
+<ResponseField name="message" type="string" status="400 Bad Request">
+  If a connection request between the two users already exists. Example: `Connection Request Already Exists`.
+</ResponseField>
+
+<ResponseField name="message" type="string" status="400 Bad Request">
+  For other unexpected errors. Example: `ERROR: Some error message`.
+</ResponseField>
+
+## `POST /request/review/:status/:requestId`
+
+Allows the recipient of an "interested" connection request to either accept or reject it.
+
+### Middleware
+
+*   `userAuth`: Ensures the user is authenticated and attaches their details (`req.user`) to the request. This middleware is defined in `src/middleware/auth.js`.
+
+### Path Parameters
+
+<ParamField name="status" type="string" required>
+  The action to take on the connection request.
+  <Expandable title="Allowed Values">
+    <Badge color="green">accepted</Badge>: The recipient accepts the request, establishing a connection.
+    <Badge color="red">rejected</Badge>: The recipient rejects the request.
+  </Expandable>
+</ParamField>
+
+<ParamField name="requestId" type="string" required>
+  The unique identifier of the connection request to be reviewed. This is the MongoDB `_id` of the `ConnectionRequestModel` instance.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string">
+  A descriptive message confirming the status update.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The updated connection request object.
+  <Expandable title="Connection Request Properties">
+    <ResponseField name="data._id" type="string">
+      The unique identifier for this connection request.
+    </ResponseField>
+    <ResponseField name="data.fromUserId" type="string">
+      The ID of the user who initiated the request.
+    </ResponseField>
+    <ResponseField name="data.toUserId" type="string">
+      The ID of the user who received the request.
+    </ResponseField>
+    <ResponseField name="data.status" type="string">
+      The new status of the request (e.g., "accepted", "rejected").
+    </ResponseField>
+    <ResponseField name="data.createdAt" type="string">
+      Timestamp of when the request was created.
+    </ResponseField>
+    <ResponseField name="data.updatedAt" type="string">
+      Timestamp of when the request was last updated.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Error Responses
+
+<Warning>
+  Only the `toUserId` of a request can review it. If a user tries to review a request not sent to them, or a request that isn't currently in "interested" status, it will result in a `404 Not Found` error.
+</Warning>
+
+<ResponseField name="message" type="string" status="400 Bad Request">
+  If `status` is not "accepted" or "rejected". Example: `Status not allowed!`.
+</ResponseField>
+
+<ResponseField name="message" type="string" status="404 Not Found">
+  If `requestId` does not exist, or the `loggedInUser` is not the `toUserId` of the request, or the request's current status is not "interested". Example: `Connection request not found`.
+</ResponseField>
+
+<ResponseField name="message" type="string" status="400 Bad Request">
+  For other unexpected errors. Example: `ERROR: Some error message`.
+</ResponseField>
+
+## Usage Example
+
+This example demonstrates how to send an "interested" connection request and then how the recipient might accept it.
+
+### 1. Send a connection request
+
+Assume `sender_user_id` is the authenticated user's ID, and `recipient_user_id` is the ID of the user they want to connect with.
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.example.com/request/send/interested/654321098765432109876543" \
+  -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+  -H "Content-Type: application/json"
+```
+```javascript JavaScript
+const sendConnectionRequest = async (toUserId, status, authToken) => {
+  try {
+    const response = await fetch(`/api/request/send/${status}/${toUserId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || 'Failed to send request');
+    }
+    console.log(data);
+    return data;
+  } catch (error) {
+    console.error('Error sending connection request:', error.message);
+  }
+};
+
+// Example usage:
+// sendConnectionRequest('654321098765432109876543', 'interested', 'YOUR_AUTH_TOKEN');
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "message": "SenderName is interested in RecipientName",
+  "data": {
+    "_id": "6589a1c1d0e9f8a7b6c5d4e3",
+    "fromUserId": "654321098765432109876542",
+    "toUserId": "654321098765432109876543",
+    "status": "interested",
+    "createdAt": "2023-12-25T12:00:00.000Z",
+    "updatedAt": "2023-12-25T12:00:00.000Z",
+    "__v": 0
+  }
+}
+```
+</ResponseExample>
+
+<Info>
+  The `fromUserId` is automatically derived from the authenticated user's token via the `userAuth` middleware.
+</Info>
+
+### 2. Review (Accept) a connection request
+
+Assuming the `recipient_user_id` is authenticated and wants to accept the request with `requestId` obtained from the previous step.
+
+<RequestExample>
+```bash cURL
+curl -X POST "https://api.example.com/request/review/accepted/6589a1c1d0e9f8a7b6c5d4e3" \
+  -H "Authorization: Bearer RECIPIENT_AUTH_TOKEN" \
+  -H "Content-Type: application/json"
+```
+```javascript JavaScript
+const reviewConnectionRequest = async (requestId, status, authToken) => {
+  try {
+    const response = await fetch(`/api/request/review/${status}/${requestId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message || 'Failed to review request');
+    }
+    console.log(data);
+    return data;
+  } catch (error) {
+    console.error('Error reviewing connection request:', error.message);
+  }
+};
+
+// Example usage:
+// reviewConnectionRequest('6589a1c1d0e9f8a7b6c5d4e3', 'accepted', 'RECIPIENT_AUTH_TOKEN');
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "message": "Connection request accepted successfully.",
+  "data": {
+    "_id": "6589a1c1d0e9f8a7b6c5d4e3",
+    "fromUserId": "654321098765432109876542",
+    "toUserId": "654321098765432109876543",
+    "status": "accepted",
+    "createdAt": "2023-12-25T12:00:00.000Z",
+    "updatedAt": "2023-12-25T12:05:00.000Z",
+    "__v": 0
+  }
+}
+```
+</ResponseExample>
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Getting 'Connection Request Already Exists' when sending a request">
+    This error indicates that there's already an active or past connection request between the two users (either `fromUserId` to `toUserId` or `toUserId` to `fromUserId`).
+    <Tip>
+      Before sending a new request, you might want to implement a check to see if a connection already exists or if there's a pending request.
+    </Tip>
+  </Accordion>
+  <Accordion title="Getting 'Connection request not found' when reviewing a request">
+    This error can occur for several reasons:
+    <Steps>
+      <Step title="Incorrect `requestId`">
+        Double-check that the `requestId` provided in the path parameter is correct and corresponds to an existing connection request in the database.
+      </Step>
+      <Step title="Unauthorized review attempt">
+        Ensure the user making the review request (`req.user._id` from the `Authorization` header) is the actual recipient (`toUserId`) of the connection request.
+      </Step>
+      <Step title="Invalid request status for review">
+        A request can only be reviewed (accepted/rejected) if its current status is "interested". If the request is already "accepted", "rejected", or "ignored", it cannot be reviewed again.
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="Invalid status type / Status not allowed! errors">
+    These errors occur when the `status` path parameter provided does not match the allowed values for the specific endpoint.
+    <Check>
+      For `/request/send/:status/:toUserId`, the `status` must be either "interested" or "ignored".
+    </Check>
+    <Check>
+      For `/request/review/:status/:requestId`, the `status` must be either "accepted" or "rejected".
+    </Check>
+  </Accordion>
+</AccordionGroup>

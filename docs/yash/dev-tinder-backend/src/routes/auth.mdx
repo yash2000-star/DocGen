@@ -1,0 +1,178 @@
+# Authentication Routes
+
+This file defines the API endpoints for user authentication, including signup, login, and logout functionality. It integrates with the `User` model for data storage and uses `bcrypt` for password encryption.
+
+## Overview
+
+The authentication module provides the core API endpoints for managing user accounts. It handles user registration, secure login with token generation, and session termination via logout. This module relies on the `User` model for database interactions and utilizes utility functions for data validation and password hashing.
+
+## Signup
+
+Handles new user registration.
+
+### POST /signup
+
+Creates a new user account.
+
+<ParamField name="firstName" type="string" required>
+  The user's first name.
+</ParamField>
+<ParamField name="lastName" type="string" required>
+  The user's last name.
+</ParamField>
+<ParamField name="emailId" type="string" required>
+  The user's unique email address.
+</ParamField>
+<ParamField name="password" type="string" required>
+  The user's desired password. Minimum 8 characters recommended.
+</ParamField>
+<ParamField name="age" type="number" required>
+  The user's age.
+</ParamField>
+<ParamField name="gender" type="string" required>
+  The user's gender.
+</ParamField>
+<ParamField name="about" type="string" default="Tell us about yourself">
+  A short bio or description from the user.
+</ParamField>
+<ParamField name="skills" type="array" default=[]>
+  An array of the user's skills.
+</ParamField>
+<ParamField name="photoUrl" type="string">
+  A URL pointing to the user's profile picture.
+</ParamField>
+
+<ResponseExample>
+```json 200 OK
+{
+  "message": "User added sucessfully!",
+  "data": {
+    "_id": "60d5ec49f2c1b3001f8e3e3e",
+    "firstName": "John",
+    "lastName": "Doe",
+    "emailId": "john.doe@example.com",
+    "age": 30,
+    "gender": "Male",
+    "about": "Software Engineer with a passion for building scalable applications.",
+    "skills": ["JavaScript", "Node.js", "React"],
+    "photoUrl": "https://example.com/photos/john_doe.jpg",
+    "__v": 0
+  }
+}
+```
+</ResponseExample>
+
+<Warning>
+  Sensitive user data is handled. Ensure proper security measures are in place for data transmission and storage. The password is automatically hashed using bcrypt.
+</Warning>
+
+### Usage Example
+
+```javascript
+// Example using fetch API
+fetch('/api/auth/signup', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    firstName: 'Jane',
+    lastName: 'Smith',
+    emailId: 'jane.smith@example.com',
+    password: 'SecurePassword123!',
+    age: 28,
+    gender: 'Female',
+    about: 'Enthusiastic designer and artist.',
+    skills: ['UI/UX', 'Figma', 'Illustration'],
+    photoUrl: 'https://example.com/photos/jane_smith.jpg',
+  }),
+})
+.then(response => response.json())
+.then(data => console.log(data))
+.catch(error => console.error('Error:', error));
+```
+
+## Login
+
+Handles user authentication.
+
+### POST /login
+
+Authenticates a user and returns a session token.
+
+<ParamField name="emailId" type="string" required>
+  The user's registered email address.
+</ParamField>
+<ParamField name="password" type="string" required>
+  The user's password.
+</ParamField>
+
+<ResponseExample>
+```json 200 OK
+{
+  "_id": "60d5ec49f2c1b3001f8e3e3e",
+  "firstName": "John",
+  "lastName": "Doe",
+  "emailId": "john.doe@example.com",
+  "age": 30,
+  "gender": "Male",
+  "about": "Software Engineer with a passion for building scalable applications.",
+  "skills": ["JavaScript", "Node.js", "React"],
+  "photoUrl": "https://example.com/photos/john_doe.jpg",
+  "__v": 0
+}
+```
+</ResponseExample>
+
+<Warning>
+  Invalid credentials will result in an error. Ensure the `emailId` and `password` are correct. The response includes the authenticated user object.
+</Warning>
+
+### Usage Example
+
+```javascript
+// Example using fetch API
+fetch('/api/auth/login', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    emailId: 'john.doe@example.com',
+    password: 'SecurePassword123!',
+  }),
+})
+.then(response => response.json())
+.then(data => console.log('Login successful:', data))
+.catch(error => console.error('Login error:', error));
+```
+
+## Logout
+
+Handles user session termination.
+
+### POST /logout
+
+Clears the authentication token, effectively logging the user out.
+
+<ResponseExample>
+```text 200 OK
+Logout Sucessful!!
+```
+</ResponseExample>
+
+<Tip>
+  This endpoint clears the `token` cookie. For robust session management in production, consider implementing token blacklisting or short-lived tokens with refresh mechanisms.
+</Tip>
+
+### Usage Example
+
+```javascript
+// Example using fetch API
+fetch('/api/auth/logout', {
+  method: 'POST',
+})
+.then(response => response.text())
+.then(message => console.log(message))
+.catch(error => console.error('Logout error:', error));
+```

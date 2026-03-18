@@ -1,0 +1,203 @@
+# Authentication Middleware
+
+This file provides Express.js middleware for user authentication. It intercepts incoming requests, validates JSON Web Tokens (JWTs) found in cookies, and attaches the authenticated user's data to the request object, enabling protected routes.
+
+## Overview
+
+The `auth.js` middleware is a crucial security layer in the application. It ensures that only authenticated users can access specific API endpoints by verifying the integrity and validity of their session tokens. This middleware integrates with the `User` model (`src/models/user.js`) to retrieve user details from the database. It is typically applied to routes defined in files such as `src/routes/profile.js`, `src/routes/chat.js`, and `src/routes/payment.js`.
+
+<CardGroup cols={2}>
+  <Card title="Purpose" icon="🛡️">
+    Validates JWTs from cookies and attaches the authenticated user object to the request.
+  </Card>
+  <Card title="Dependencies" icon="🔗">
+    Relies on `jsonwebtoken` for token operations and `User` model (`src/models/user.js`) for user data.
+  </Card>
+</CardGroup>
+
+## `userAuth` Function
+
+`userAuth` is an asynchronous Express middleware function responsible for authenticating requests.
+
+<Info>
+  This middleware is designed to be inserted into the Express request processing pipeline
+  before any route handlers that require an authenticated user. It will either pass
+  the request to the next middleware/handler (`next()`) or terminate it with an error response.
+</Info>
+
+### Parameters
+
+<ParamField name="req" type="object" required>
+  The Express request object, which is expected to contain an authentication token
+  within its `cookies`.
+  <Expandable title="`req` properties used">
+    <ParamField name="req.cookies.token" type="string" required>
+      The JSON Web Token (JWT) issued during user login, expected to be present
+      as an HTTP-only cookie named `token`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="res" type="object" required>
+  The Express response object, used to send error statuses and messages if
+  authentication fails.
+</ParamField>
+
+<ParamField name="next" type="function" required>
+  The callback function to pass control to the next middleware function in the stack.
+  Called only if authentication is successful.
+</ParamField>
+
+### Effects / Returns
+
+<ResponseField name="req.user" type="object">
+  If authentication is successful, the complete user document retrieved from the database
+  is attached to the `req` object as `req.user`. This allows subsequent middleware
+  or route handlers to easily access authenticated user data.
+</ResponseField>
+
+<ResponseField name="Response Status" type="number">
+  If authentication fails due to a missing or invalid token, the middleware
+  sends an HTTP `401 Unauthorized` or `400 Bad Request` status code along
+  with a descriptive error message.
+</ResponseField>
+
+<Warning>
+  The `userAuth` middleware uses `process.env.JWT_SECRET` to verify the authenticity
+  of the JWT. It is critical to keep this environment variable strictly confidential
+  and secure. Exposure of `JWT_SECRET` would allow malicious actors to forge valid
+  authentication tokens, potentially compromising user accounts and data.
+</Warning>
+
+<Danger>
+  The JWT is read from `req.cookies`. To prevent client-side script access (XSS attacks),
+  ensure the `token` cookie is always set with the `HttpOnly` flag. Additionally,
+  for production environments, the `Secure` flag should be used to ensure the cookie
+  is only sent over HTTPS connections, protecting against man-in-the-middle attacks.
+</Danger>
+
+### Code Example
+
+```javascript
+const jwt = require('jsonwebtoken');
+const User = require("../models/user"); // Imports the User model
+
+const userAuth = async (req, res, next) => {
+   try {
+      const { token } = req.cookies; // Attempt to read token from cookies
+      if (!token) {
+         return res.status(401).send("Please Login!"); // No token found
+      }
+
+      // Verify the token using the secret key
+      const decodeObj = await jwt.verify(token, process.env.JWT_SECRET);
+
+      const { _id } = decodeObj; // Extract user ID from decoded token
+
+      // Find the user in the database
+      const user = await User.findById(_id);
+      if (!user) {
+         throw new Error("User not found"); // User ID in token doesn't match any user
+      }
+
+      req.user = user; // Attach the user object to the request
+      next(); // Proceed to the next middleware/route handler
+   } catch (err) {
+      // Catch any errors during token verification or user lookup
+      res.status(400).send("ERROR: " + err.message);
+   }
+};
+
+module.exports = {
+   userAuth,
+};
+```
+
+## Usage Example
+
+To protect an API endpoint, import the `userAuth` middleware and include it in your Express route definition. Any request to this route will first pass through `userAuth` for authentication.
+
+```javascript
+// Example in src/routes/profile.js
+const express = require('express');
+const router = express.Router();
+const { userAuth } = require('../middleware/auth'); // Import the authentication middleware
+const User = require('../models/user'); // Assuming you might interact with the User model here
+
+// GET /api/profile - A route protected by userAuth middleware
+// This route will only execute if userAuth successfully authenticates the request.
+router.get('/profile', userAuth, async (req, res) => {
+  // If userAuth passes, req.user will contain the authenticated user's data
+  res.json({
+    message: `Welcome to your profile, ${req.user.email}!`,
+    user: {
+      id: req.user._id,
+      email: req.user.email,
+      role: req.user.role, // Example user fields
+      // ... other user data
+    },
+  });
+});
+
+// PUT /api/profile - Another protected route for updating user data
+router.put('/profile', userAuth, async (req, res) => {
+  const { name, bio } = req.body;
+  const user = req.user; // Access the authenticated user directly from req.user
+
+  user.name = name || user.name;
+  user.bio = bio || user.bio;
+  await user.save();
+
+  res.json({ message: 'Profile updated successfully', user: user });
+});
+
+module.exports = router;
+```
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="`Please Login!` (HTTP 401 Unauthorized)">
+    This response indicates that the `token` cookie was not found in the incoming request.
+    This typically happens if the user has not logged in or if the client-side
+    application failed to correctly set the authentication cookie.
+    <Tip>
+      Verify that your login process correctly issues and sets an HTTP-only `token`
+      cookie. Check browser developer tools to confirm the cookie is present and
+      being sent with requests to protected routes.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="`JsonWebTokenError: invalid signature` or `TokenExpiredError` (HTTP 400 Bad Request)">
+    These errors are thrown by `jwt.verify` when the JWT is invalid.
+    An `invalid signature` suggests the token was tampered with or signed
+    with a different `JWT_SECRET`. A `TokenExpiredError` means the token's
+    expiration date (`exp` claim) has passed.
+    <Note>
+      Ensure the `process.env.JWT_SECRET` environment variable is identical
+      across all environments (development, staging, production) where tokens
+      are issued and verified. For expired tokens, the user needs to re-authenticate.
+    </Note>
+  </Accordion>
+
+  <Accordion title="`User not found` (HTTP 400 Bad Request)">
+    This error occurs if the `_id` extracted from a *valid* JWT does not correspond
+    to any existing user in the database. This can happen if a user account was
+    deleted after a token was issued, or if there's a data discrepancy.
+    <Info>
+      While less common, this scenario can be handled by revoking active tokens
+      when a user is deleted, or by implementing a token blacklist mechanism
+      to invalidate tokens associated with non-existent users.
+    </Info>
+  </Accordion>
+
+  <Accordion title="`ReferenceError: jwt is not defined` or `User is not defined`">
+    This indicates that `require('jsonwebtoken')` or `require("../models/user")`
+    failed, or the variables were accidentally shadowed.
+    <Check>
+      Ensure the `require` statements at the top of `src/middleware/auth.js`
+      are present and correctly pointing to the `jsonwebtoken` package and
+      the `src/models/user.js` file, respectively.
+    </Check>
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,57 @@
+[
+  {
+    "level": 1,
+    "text": "Socket Utilities",
+    "id": "socket-utilities"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Initialization",
+    "id": "initialization"
+  },
+  {
+    "level": 2,
+    "text": "Socket Events",
+    "id": "socket-events"
+  },
+  {
+    "level": 3,
+    "text": "`connection`",
+    "id": "connection"
+  },
+  {
+    "level": 3,
+    "text": "`joinChat`",
+    "id": "joinchat"
+  },
+  {
+    "level": 3,
+    "text": "`sendMessage`",
+    "id": "sendmessage"
+  },
+  {
+    "level": 3,
+    "text": "`disconnect`",
+    "id": "disconnect"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 2,
+    "text": "Dependencies",
+    "id": "dependencies"
+  },
+  {
+    "level": 2,
+    "text": "Environment Variables",
+    "id": "environment-variables"
+  }
+]

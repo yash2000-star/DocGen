@@ -1,0 +1,122 @@
+# Input Validation Utilities
+
+This file contains utility functions for validating user input data across various API endpoints, ensuring data integrity and security before it's processed by the application.
+
+## Overview
+
+The `validation.js` module provides helper functions to validate data received in API requests. It leverages the `validator` library to check for common data formats like email addresses and strong passwords, and enforces custom business logic rules. This module is crucial for maintaining data quality and preventing invalid or malicious input from reaching the core application logic or database.
+
+## Parameters / Configuration
+
+This file exports functions that do not accept direct configuration parameters but instead operate on the `req` object from an Express.js request.
+
+## Functions
+
+### `validateSignUpData`
+
+Validates the data provided for user sign-up.
+
+<Warning>
+This function throws errors upon encountering invalid data. Ensure that the calling route handler is prepared to catch and handle these errors gracefully, returning appropriate HTTP status codes and messages to the client.
+</Warning>
+
+#### Parameters
+
+<ParamField name="req" type="object" required>
+The Express.js request object. The validation logic will inspect `req.body`.
+<Expandable title="req.body properties">
+<ParamField name="req.body.firstName" type="string" required>
+The user's first name. Must be at least 4 characters long.
+</ParamField>
+<ParamField name="req.body.lastName" type="string" required>
+The user's last name.
+</ParamField>
+<ParamField name="req.body.emailId" type="string" required>
+The user's email address. Must be a valid email format.
+</ParamField>
+<ParamField name="req.body.password" type="string" required>
+The user's password. Must be at least 6 characters long.
+</ParamField>
+<ParamField name="req.body.age" type="number">
+The user's age.
+</ParamField>
+<ParamField name="req.body.gender" type="string">
+The user's gender. Accepts "male", "female", or "other" (case-insensitive).
+</ParamField>
+</Expandable>
+</ParamField>
+
+#### Example
+
+```javascript
+// In a route handler (e.g., src/routes/auth.js)
+const { validateSignUpData } = require('../utils/validation');
+
+app.post('/signup', (req, res) => {
+  try {
+    validateSignUpData(req);
+    // Proceed with user creation if validation passes
+    res.status(201).json({ message: 'User data validated successfully.' });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+```
+
+### `validateEditProfileData`
+
+Checks if the fields provided for editing a user's profile are allowed.
+
+#### Parameters
+
+<ParamField name="req" type="object" required>
+The Express.js request object. The validation logic will inspect `req.body`.
+<Expandable title="req.body properties">
+This function checks for the presence of any of the following fields in `req.body`:
+- `firstName`
+- `lastName`
+- `emailId`
+- `about`
+- `skills`
+- `age`
+- `photoUrl`
+- `gender`
+</Expandable>
+</ParamField>
+
+#### Returns
+
+<ResponseField name="isEditAllowed" type="boolean">
+Returns `true` if all fields in `req.body` are present in the `allowedEditFields` array, `false` otherwise.
+</ResponseField>
+
+#### Example
+
+```javascript
+// In a route handler (e.g., src/routes/profile.js)
+const { validateEditProfileData } = require('../utils/validation');
+
+app.put('/profile', (req, res) => {
+  const isAllowed = validateEditProfileData(req);
+  if (!isAllowed) {
+    return res.status(400).json({ error: 'Some fields are not allowed for editing.' });
+  }
+  // Proceed with profile update if validation passes
+  res.json({ message: 'Profile edit data is valid.' });
+});
+```
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="What happens if `validateSignUpData` throws an error?">
+    If `validateSignUpData` encounters an invalid field or format, it will throw an `Error` object with a descriptive message. The route handler that calls `validateSignUpData` should use a `try...catch` block to catch this error and return an appropriate HTTP 400 (Bad Request) response to the client, including the error message.
+  </Accordion>
+  <Accordion title="What are the allowed fields for editing a profile with `validateEditProfileData`?">
+    The `validateEditProfileData` function specifically allows the following fields for editing: `firstName`, `lastName`, `emailId`, `about`, `skills`, `age`, `photoUrl`, and `gender`. If any other field is present in the request body, the function will return `false`.
+  </Accordion>
+  <Accordion title="Why is email validation important?">
+    Email validation is critical for user account management, communication, and security. It ensures that users can be contacted, that password reset mechanisms work correctly, and prevents the system from storing malformed email addresses that could lead to issues with mail delivery or processing.
+  </Accordion>
+</AccordionGroup>
+```

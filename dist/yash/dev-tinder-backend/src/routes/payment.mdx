@@ -1,0 +1,202 @@
+# Payment Routes
+
+This file defines the API endpoints for handling payment processing, including creating payment orders and verifying webhook events from Razorpay.
+
+## Overview
+
+This module is responsible for integrating with the Razorpay payment gateway to facilitate premium membership purchases. It handles the creation of payment orders, the processing of payment callbacks via webhooks, and the verification of user premium status. It interacts with the `Payment` and `User` models to update records accordingly.
+
+<CardGroup cols={2}>
+  <Card title="Create Payment Order" icon="🛒">
+    Initiates a new payment order with Razorpay for premium membership.
+  </Card>
+  <Card title="Process Webhook" icon="🔁">
+    Handles asynchronous notifications from Razorpay regarding payment status updates.
+  </Card>
+  <Card title="Verify Premium Status" icon="✅">
+    Checks if a user has an active premium membership.
+  </Card>
+</CardGroup>
+
+## Create Payment Order
+
+Handles the creation of a payment order for a selected membership type.
+
+### POST `/payment/create`
+
+This endpoint creates a new payment order using the Razorpay API. It requires user authentication.
+
+#### Parameters
+
+<ParamField name="membershipType" type="string" required>
+  The type of membership to purchase. Accepted values are defined in `membershipAmount` (e.g., "monthly", "yearly").
+</ParamField>
+
+#### Request Body
+
+The request body should contain the `membershipType`.
+
+#### Response
+
+Returns the created Razorpay order details and the Razorpay API key ID.
+
+<RequestExample>
+```bash cURL
+curl -X POST https://your-api.com/payment/create \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"membershipType": "monthly"}'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "userId": "user123",
+  "orderId": "order_abc123",
+  "status": "created",
+  "amount": 10000,
+  "currency": "INR",
+  "receipt": "receipt#1",
+  "notes": {
+    "firstName": "John",
+    "lastName": "Doe",
+    "emailId": "john.doe@example.com",
+    "membershipType": "monthly"
+  },
+  "keyId": "rzp_test_YOUR_KEY_ID"
+}
+```
+
+```json 400 Bad Request
+{
+  "error": "Invalid membership type"
+}
+```
+</ResponseExample>
+
+<Tip>
+The `amount` in the response is in paise. Multiply by 100 to get the actual currency value.
+</Tip>
+
+<Warning>
+Ensure the `RAZORPAY_KEY_ID` environment variable is correctly set in your application's configuration.
+</Warning>
+
+## Process Webhook
+
+Handles asynchronous notifications from Razorpay regarding payment status.
+
+### POST `/payment/webhook`
+
+This endpoint is called by Razorpay to notify your application about payment events, such as `payment.captured` or `payment.failed`.
+
+#### Request Body
+
+The request body contains details about the payment event.
+
+#### Security
+
+<Warning>
+It is CRITICAL to validate the incoming webhook signature to ensure the request originates from Razorpay and has not been tampered with. Failure to do so can lead to security vulnerabilities.
+</Warning>
+
+To validate the signature, use the `X-Razorpay-Signature` header and your `RAZORPAY_WEBHOOK_SECRET`.
+
+#### Response
+
+Returns a success message if the webhook is processed correctly.
+
+<RequestExample>
+```bash cURL
+curl -X POST https://your-api.com/payment/webhook \
+  -H "X-Razorpay-Signature: YOUR_GENERATED_SIGNATURE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": {
+      "payment": {
+        "entity": {
+          "id": "pay_abc123",
+          "order_id": "order_abc123",
+          "status": "captured",
+          "amount": 10000,
+          "currency": "INR",
+          "notes": {
+            "firstName": "John",
+            "lastName": "Doe",
+            "emailId": "john.doe@example.com",
+            "membershipType": "monthly"
+          }
+        }
+      }
+    },
+    "event": "payment.captured"
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "msg": "Webhook received successfully"
+}
+```
+
+```json 400 Bad Request
+{
+  "msg": "Invalid webhook signature"
+}
+```
+</ResponseExample>
+
+<Info>
+This endpoint uses the `razorpay-utils` library for signature validation. Ensure it's installed and configured correctly.
+</Info>
+
+<Tip>
+You can uncomment the `if (req.body.event === "payment.captured ")` and `if(req.body.event ==="payment.faild")` blocks to implement specific logic for different payment events.
+</Tip>
+
+## Verify Premium Status
+
+Checks if a user has an active premium membership.
+
+### GET `/premium/verify`
+
+This endpoint verifies the premium status of the currently authenticated user.
+
+#### Authentication
+
+Requires user authentication via `userAuth` middleware.
+
+#### Response
+
+Returns the user object, including their `isPremium` status.
+
+<RequestExample>
+```bash cURL
+curl -X GET https://your-api.com/premium/verify \
+  -H "Authorization: Bearer <your_jwt_token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "isPremium": true,
+  "membershipType": "monthly",
+  // ... other user properties
+}
+```
+
+```json 200 OK
+{
+  "isPremium": false,
+  // ... other user properties
+}
+```
+</ResponseExample>
+
+<Note>
+This endpoint returns the user object regardless of premium status, but the `isPremium` flag will indicate their current membership level.
+</Note>

@@ -1,0 +1,61 @@
+# Database Configuration
+
+This file contains the necessary configuration and logic to establish a connection to the MongoDB database using Mongoose.
+
+## Overview
+
+The `database.js` module is responsible for initializing and managing the connection to the MongoDB instance. It ensures that the application can reliably interact with the database by abstracting the connection logic and utilizing environment variables for sensitive credentials. This module is crucial for all data persistence operations within the application.
+
+## Database Connection
+
+The `connectDB` function handles the connection to the MongoDB database. It uses Mongoose to establish a connection using a connection string retrieved from environment variables.
+
+<Steps>
+  <Step title="Retrieve Connection String">
+    The function reads the MongoDB connection string from the `DB_CONNECTION_SECRET` environment variable. This variable should contain the full connection URI, including username, password, host, and database name.
+  </Step>
+  <Step title="Establish Mongoose Connection">
+    Mongoose's `connect` method is called with the retrieved connection string to establish a connection to the MongoDB server.
+  </Step>
+  <Step title="Export Connection Function">
+    The `connectDB` function is exported, allowing other parts of the application to call it during the initialization phase.
+  </Step>
+</Steps>
+
+### `connectDB()`
+
+Establishes a connection to the MongoDB database.
+
+<Warning>
+  The `DB_CONNECTION_SECRET` environment variable must be correctly configured with a valid MongoDB connection string. Failure to do so will prevent the application from connecting to the database.
+</Warning>
+
+```javascript Javascript
+const connectDB = async () => {
+  await mongoose.connect(process.env.DB_CONNECTION_SECRET);
+};
+
+module.exports = connectDB;
+```
+
+## Usage Example
+
+To connect to the database, import the `connectDB` function and call it during your application's startup process. It's recommended to do this in your main application file (e.g., `app.js`).
+
+```javascript Javascript
+// src/app.js
+const express = require('express');
+const connectDB = require('./config/database');
+
+const app = express();
+
+// Connect to the database
+connectDB().then(() => {
+  console.log('MongoDB connected successfully.');
+}).catch((err) => {
+  console.error('MongoDB connection error:', err);
+  process.exit(1); // Exit process with failure
+});
+
+// ... other application setup and routes
+```

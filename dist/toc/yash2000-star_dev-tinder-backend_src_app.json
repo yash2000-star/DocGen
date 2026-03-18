@@ -1,0 +1,97 @@
+[
+  {
+    "level": 1,
+    "text": "Application Entry Point (src/app.js)",
+    "id": "application-entry-point-srcappjs"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Setup",
+    "id": "setup"
+  },
+  {
+    "level": 1,
+    "text": "or",
+    "id": "or"
+  },
+  {
+    "level": 1,
+    "text": "... other variables like MONGODB_URI, JWT_SECRET, etc.",
+    "id": "-other-variables-like-mongodb_uri-jwt_secret-etc"
+  },
+  {
+    "level": 2,
+    "text": "Configuration",
+    "id": "configuration"
+  },
+  {
+    "level": 2,
+    "text": "Middleware and Route Configuration",
+    "id": "middleware-and-route-configuration"
+  },
+  {
+    "level": 3,
+    "text": "CORS Middleware",
+    "id": "cors-middleware"
+  },
+  {
+    "level": 3,
+    "text": "JSON Body Parser",
+    "id": "json-body-parser"
+  },
+  {
+    "level": 3,
+    "text": "Cookie Parser",
+    "id": "cookie-parser"
+  },
+  {
+    "level": 3,
+    "text": "API Route Registration",
+    "id": "api-route-registration"
+  },
+  {
+    "level": 3,
+    "text": "Database Connection",
+    "id": "database-connection"
+  },
+  {
+    "level": 3,
+    "text": "WebSocket Initialization",
+    "id": "websocket-initialization"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 1,
+    "text": "Ensure you are in the project root directory",
+    "id": "ensure-you-are-in-the-project-root-directory"
+  },
+  {
+    "level": 1,
+    "text": "Run the application using Node.js",
+    "id": "run-the-application-using-nodejs"
+  },
+  {
+    "level": 2,
+    "text": "Common Errors / Troubleshooting",
+    "id": "common-errors--troubleshooting"
+  },
+  {
+    "level": 1,
+    "text": "Then kill the process using its PID (e.g., kill -9 12345)",
+    "id": "then-kill-the-process-using-its-pid-eg-kill--9-12345"
+  },
+  {
+    "level": 1,
+    "text": "Then kill the process using its PID (e.g., taskkill /PID 12345 /F)",
+    "id": "then-kill-the-process-using-its-pid-eg-taskkill-pid-12345-f"
+  }
+]

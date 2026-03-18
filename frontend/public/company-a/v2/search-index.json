@@ -1,0 +1,16 @@
+[
+  {
+    "title": "Introduction (v2)",
+    "route": "introduction",
+    "content": "\r  welcome to company a (v2)\r \r this is the new and improved version 2 api for company a!\r \r  what is new?\r we have completely rewritten our core engine to be twice as fast.",
+    "tenant": "company-a",
+    "version": "v2"
+  },
+  {
+    "title": "Payments Webhooks",
+    "route": "payments/webhooks",
+    "content": "\r  authenticating payments\r \r notice how this file is safely nested inside a \"payments\" folder. your sidebar should automatically create a payments dropdown menu for this!\r \r  pci compliance\r always ensure your requests are pci compliant when using our v2 payment gateway.",
+    "tenant": "company-a",
+    "version": "v2"
+  }
+]

@@ -1,0 +1,88 @@
+# Connection Request Model
+
+This file defines the Mongoose schema and model for managing connection requests between users. It handles the storage and validation of incoming requests, including their status and sender/receiver information.
+
+## Overview
+
+The `ConnectionRequestModel` is a critical component for managing user interactions within the application. It models the relationship where one user expresses interest, accepts, rejects, or ignores a request from another user. This model is used by the `requests` routes to process and update the status of these interactions.
+
+<CardGroup cols={2}>
+  <Card title="User References" icon="👤">
+    Establishes relationships with the <Code>User</Code> model to link requests to specific users.
+  </Card>
+  <Card title="Status Management" icon="✅">
+    Enforces predefined statuses for connection requests, ensuring data integrity.
+  </Card>
+</CardGroup>
+
+## Parameters / Configuration
+
+This model does not accept direct configuration parameters. It is used internally by the application's data layer.
+
+## ConnectionRequest Model
+
+This is the Mongoose model for `ConnectionRequest` documents.
+
+<ResponseField name="fromUserId" type="ObjectId" required>
+  The ID of the user sending the connection request. This references the <Code>User</Code> model.
+</ResponseField>
+
+<ResponseField name="toUserId" type="ObjectId" required>
+  The ID of the user receiving the connection request. This references the <Code>User</Code> model.
+</ResponseField>
+
+<ResponseField name="status" type="String" required>
+  The current status of the connection request. Must be one of: "ignored", "interested", "accepted", "rejected".
+</ResponseField>
+
+<ResponseField name="createdAt" type="Date">
+  Timestamp indicating when the connection request was created. Automatically managed by Mongoose.
+</ResponseField>
+
+<ResponseField name="updatedAt" type="Date">
+  Timestamp indicating when the connection request was last updated. Automatically managed by Mongoose.
+</ResponseField>
+
+<Warning>
+  The `fromUserId` and `toUserId` fields must not be the same. The model prevents sending a connection request to oneself.
+</Warning>
+
+## Usage Example
+
+While this is a model, it's typically used within service layers or routes. Here's an example of how you might create a new connection request:
+
+```javascript
+const ConnectionRequest = require('../models/connectionRequest');
+const mongoose = require('mongoose');
+
+async function createConnectionRequest(fromUserId, toUserId) {
+  try {
+    const newRequest = new ConnectionRequest({
+      fromUserId: new mongoose.Types.ObjectId(fromUserId),
+      toUserId: new mongoose.Types.ObjectId(toUserId),
+      status: "interested", // Initial status
+    });
+
+    const savedRequest = await newRequest.save();
+    console.log("Connection request created:", savedRequest);
+    return savedRequest;
+  } catch (error) {
+    console.error("Error creating connection request:", error.message);
+    throw error;
+  }
+}
+
+// Example usage (assuming you have valid user IDs)
+// createConnectionRequest("user123", "user456");
+```
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Error: Cannot send connection request to yourself!">
+    This error occurs when the `fromUserId` and `toUserId` are identical. The schema's pre-save hook prevents this to avoid illogical requests. Ensure that the IDs passed to the model constructor are distinct.
+  </Accordion>
+  <Accordion title="Error: [VALUE] is incorrect status type">
+    This error means that the `status` field was assigned a value not present in the `enum` array (`ignored`, `interested`, `accepted`, `rejected`). Ensure you are using one of the allowed string values for the status.
+  </Accordion>
+</AccordionGroup>

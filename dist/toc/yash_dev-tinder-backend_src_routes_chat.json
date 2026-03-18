@@ -1,0 +1,47 @@
+[
+  {
+    "level": 1,
+    "text": "Chat Routes",
+    "id": "chat-routes"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Routes",
+    "id": "routes"
+  },
+  {
+    "level": 3,
+    "text": "Get Chat History or Create New",
+    "id": "get-chat-history-or-create-new"
+  },
+  {
+    "level": 4,
+    "text": "Parameters",
+    "id": "parameters"
+  },
+  {
+    "level": 4,
+    "text": "Request Example",
+    "id": "request-example"
+  },
+  {
+    "level": 4,
+    "text": "Response Example",
+    "id": "response-example"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 2,
+    "text": "Related Files",
+    "id": "related-files"
+  }
+]

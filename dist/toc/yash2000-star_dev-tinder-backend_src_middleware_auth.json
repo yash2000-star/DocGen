@@ -1,0 +1,42 @@
+[
+  {
+    "level": 1,
+    "text": "Authentication Middleware",
+    "id": "authentication-middleware"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "`userAuth` Function",
+    "id": "userauth-function"
+  },
+  {
+    "level": 3,
+    "text": "Parameters",
+    "id": "parameters"
+  },
+  {
+    "level": 3,
+    "text": "Effects / Returns",
+    "id": "effects--returns"
+  },
+  {
+    "level": 3,
+    "text": "Code Example",
+    "id": "code-example"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 2,
+    "text": "Common Errors / Troubleshooting",
+    "id": "common-errors--troubleshooting"
+  }
+]

@@ -1,0 +1,270 @@
+# Application Entry Point (src/app.js)
+
+`src/app.js` serves as the primary entry point for the DevTinder backend application. It is responsible for initializing the Express server, connecting to the MongoDB database, configuring essential middleware, registering all API routes, and setting up the real-time WebSocket communication layer. This file orchestrates the startup sequence and ensures all core services are available.
+
+## Overview
+
+This module acts as the central hub of the backend, bringing together various components to create a functional API server. It defines the application's global settings, including security policies like CORS, and sets up the foundational structure for handling requests and real-time events.
+
+<CardGroup cols={2}>
+  <Card title="Server Setup" icon="⚙️">
+    Initializes the Express application and creates the HTTP server.
+  </Card>
+  <Card title="Middleware Configuration" icon="🎛️">
+    Configures essential middleware like CORS, JSON body parsing, and cookie parsing.
+  </Card>
+  <Card title="Route Management" icon="🛣️">
+    Integrates all defined API routes from the `src/routes` directory.
+  </Card>
+  <Card title="Database & Sockets" icon="🔗">
+    Establishes the connection to the MongoDB database and initializes the WebSocket server for real-time features.
+  </Card>
+</CardGroup>
+
+## Setup
+
+To run the application, you need to ensure all dependencies are installed and environment variables are correctly configured.
+
+<Steps>
+  <Step title="Install dependencies">
+    Navigate to the project root and install all required Node.js packages using npm or yarn.
+    ```bash
+    npm install
+    # or
+    yarn install
+    ```
+  </Step>
+  <Step title="Configure environment variables">
+    Create a `.env` file in the project root based on the provided `.env.example`. Ensure that the `PORT` variable is set for the server to listen on.
+    ```env title=".env"
+    PORT=5000
+    # ... other variables like MONGODB_URI, JWT_SECRET, etc.
+    ```
+    <Info>
+      The application automatically loads environment variables from `.env` using `dotenv`.
+    </Info>
+  </Step>
+</Steps>
+
+## Configuration
+
+The `app.js` file relies on environment variables and an explicit list of allowed origins for its operation.
+
+<ParamField name="PORT" type="number" default="5000">
+  The port number on which the Express server will listen for incoming HTTP requests. This value is loaded from the `PORT` environment variable in the `.env` file.
+</ParamField>
+
+<ParamField name="allowedOrigins" type="string[]" required>
+  An array of URLs that are permitted to make cross-origin requests to this API. These typically include your client-side application's development and production URLs.
+  <Warning>
+    Misconfiguring `allowedOrigins` can lead to either CORS errors preventing legitimate clients from connecting, or security vulnerabilities if overly permissive. Always restrict this list to known, trusted origins.
+  </Warning>
+</ParamField>
+
+## Middleware and Route Configuration
+
+This section details the various middleware functions and API routes configured in `app.js`.
+
+### CORS Middleware
+
+The `cors` middleware is configured to manage Cross-Origin Resource Sharing, ensuring that only specified origins can interact with the API.
+
+<ParamField name="origin" type="function" required>
+  A function that checks if an incoming request's origin is allowed.
+  <Expandable title="origin function details">
+    <ParamField name="origin" type="string | undefined">The origin of the incoming request.</ParamField>
+    <ParamField name="callback" type="function">
+      A callback function to be invoked with `(error, isAllowed)`.
+      <Expandable title="callback parameters">
+        <ParamField name="error" type="Error | null">An error object if the origin is not allowed, otherwise `null`.</ParamField>
+        <ParamField name="isAllowed" type="boolean">`true` if the origin is allowed, `false` otherwise.</ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+  <Note>
+    The `origin` function dynamically checks against the `allowedOrigins` array defined in `app.js`.
+  </Note>
+</ParamField>
+
+<ParamField name="credentials" type="boolean" default="false">
+  Enables the `Access-Control-Allow-Credentials` header. Set to `true` to allow cookies, authorization headers, and TLS client certificates to be sent with cross-origin requests.
+  <Warning>
+    Setting `credentials: true` requires a specific `origin` rather than `*` for security reasons. Ensure `allowedOrigins` is properly configured.
+  </Warning>
+</ParamField>
+
+### JSON Body Parser
+
+This middleware parses incoming request bodies with JSON payloads.
+
+```javascript
+app.use(express.json());
+```
+
+<Info>
+  This allows your Express application to easily read JSON data sent in the body of `POST` or `PUT` requests, making it accessible via `req.body`.
+</Info>
+
+### Cookie Parser
+
+The `cookie-parser` middleware parses Cookie headers and populates `req.cookies` with an object keyed by cookie names.
+
+```javascript
+app.use(cookieParser());
+```
+
+<Note>
+  This is essential for handling authentication tokens or session IDs stored as HTTP-only cookies.
+</Note>
+
+### API Route Registration
+
+All major API modules are imported and registered with the Express application. Each router defines a set of API endpoints.
+
+<CardGroup cols={2}>
+  <Card title="Authentication Routes" icon="🔐">
+    `authRouter` from `src/routes/auth.js` handles user registration, login, and authentication-related endpoints.
+  </Card>
+  <Card title="Profile Routes" icon="👤">
+    `profileRouter` from `src/routes/profile.js` manages user profile data and settings.
+  </Card>
+  <Card title="Connection Request Routes" icon="🤝">
+    `requestRouter` from `src/routes/requests.js` handles connection requests between users.
+  </Card>
+  <Card title="User Management Routes" icon="🧑‍💻">
+    `userRouter` from `src/routes/user.js` provides general user-related operations.
+  </Card>
+  <Card title="Payment Routes" icon="💳">
+    `paymentRouter` from `src/routes/payment.js` manages payment processing and related functionalities.
+  </Card>
+  <Card title="Chat Routes" icon="💬">
+    `chatRouter` from `src/routes/chat.js` handles chat message history and related API calls.
+  </Card>
+</CardGroup>
+
+### Database Connection
+
+The application establishes a connection to the MongoDB database using the `connectDB` utility.
+
+```javascript
+connectDB()
+.then(() => {
+    console.log("Database connection established...");
+    // ... server listen
+})
+.catch(err => {
+    console.log("Databse cannot be connected!!");
+    console.error(err);
+})
+```
+
+<Info>
+  The `connectDB` function is imported from `src/config/database.js` and uses the `MONGODB_URI` environment variable. The server only starts listening for requests after a successful database connection.
+</Info>
+
+### WebSocket Initialization
+
+The WebSocket server is initialized to enable real-time communication features, such as chat or live notifications.
+
+```javascript
+const server = http.createServer(app);
+initializeSocket(server);
+```
+
+<Note>
+  The `initializeSocket` function, imported from `src/utils/socket.js`, attaches the WebSocket server to the existing HTTP server instance.
+</Note>
+
+## Usage Example
+
+To start the DevTinder backend application, ensure your `.env` file is configured and then run the `app.js` file.
+
+<RequestExample>
+```bash
+# Ensure you are in the project root directory
+# Run the application using Node.js
+node src/app.js
+```
+</RequestExample>
+
+<ResponseExample>
+```text 
+Database connection established...
+Server is successfully listening on port 5000...
+```
+</ResponseExample>
+
+<Tip>
+  For development, you might have a `start` script in your `package.json` like `node src/app.js` or `nodemon src/app.js` (for automatic restarts).
+</Tip>
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Database Connection Failure">
+    **Error Message Example:**
+    ```text
+    Databse cannot be connected!!
+    MongooseServerSelectionError: connect ECONNREFUSED ...
+    ```
+    This error indicates that the application could not connect to your MongoDB instance.
+    <Steps>
+      <Step title="Check MongoDB server status">
+        Ensure your MongoDB server (local or remote) is running and accessible.
+      </Step>
+      <Step title="Verify MONGODB_URI">
+        Confirm that the `MONGODB_URI` in your `.env` file is correct and points to the right database. Pay attention to the host, port, and authentication credentials.
+      </Step>
+      <Step title="Network access">
+        If using a remote database (e.g., MongoDB Atlas), ensure your current IP address is whitelisted for access.
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="CORS Policy Error">
+    **Error Message Example:**
+    ```text
+    Access to XMLHttpRequest at '...' from origin '...' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+    ```
+    This error occurs when a client from an origin not listed in `allowedOrigins` attempts to access the API.
+    <Steps>
+      <Step title="Add origin to allowedOrigins">
+        Edit `src/app.js` and add the problematic client's origin URL (e.g., `http://localhost:5173`, `https://your-frontend.com`) to the `allowedOrigins` array.
+        ```javascript
+        const allowedOrigins = [
+            "http://localhost:5173",            
+            "https://devtinder.yashwant.xyz",
+            "http://your-new-frontend.com" // Add new origin here
+        ];
+        ```
+      </Step>
+      <Step title="Restart server">
+        Restart the backend server for the changes to take effect.
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="Port Already In Use">
+    **Error Message Example:**
+    ```text
+    Error: listen EADDRINUSE: address already in use :::5000
+    ```
+    This means another process is already occupying the port (default 5000) that your application is trying to use.
+    <Steps>
+      <Step title="Identify and kill process">
+        Find the process using the port and terminate it.
+        <CodeGroup>
+        ```bash macOS/Linux
+        lsof -i tcp:5000
+        # Then kill the process using its PID (e.g., kill -9 12345)
+        ```
+        ```bash Windows
+        netstat -ano | findstr :5000
+        # Then kill the process using its PID (e.g., taskkill /PID 12345 /F)
+        ```
+        </CodeGroup>
+      </Step>
+      <Step title="Change application port">
+        Alternatively, change the `PORT` variable in your `.env` file to an unused port number (e.g., `5001`).
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>

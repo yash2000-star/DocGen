@@ -1,0 +1,244 @@
+# Profile Routes
+
+This file defines the API routes for managing user profiles, including viewing, editing, and changing passwords. It integrates with the `userAuth` middleware for authentication and the `User` model for database operations.
+
+## Overview
+
+The `profileRouter` handles all profile-related interactions for an authenticated user. It provides endpoints to retrieve user details, update various profile fields, and securely change the user's password.
+
+<CardGroup cols={3}>
+  <Card title="View Profile" icon="👤">
+    Retrieve the authenticated user's complete profile information.
+  </Card>
+  <Card title="Edit Profile" icon="✍️">
+    Update specific fields of the user's profile.
+  </Card>
+  <Card title="Change Password" icon="🔑">
+    Securely update the user's account password.
+  </Card>
+</CardGroup>
+
+## Dependencies
+
+This module relies on the following key components:
+
+*   **`express`**: The web framework for routing.
+*   **`../middleware/auth.js` (`userAuth`)**: Authentication middleware to verify user tokens and attach user data to the request object.
+*   **`../utils/validation.js` (`validateEditProfileData`)**: Utility for validating incoming data for profile edit requests.
+*   **`../models/user.js` (`User`)**: Mongoose model for interacting with user data in the database.
+*   **`jsonwebtoken` (`jwt`)**: For verifying JWT tokens.
+*   **`validator`**: For robust data validation, particularly for password strength.
+*   **`bcrypt`**: For hashing and comparing passwords securely.
+
+## Routes
+
+### `GET /profile/view`
+
+Retrieves the profile details of the currently authenticated user. This route is protected by the `userAuth` middleware.
+
+<Info>
+  The `userAuth` middleware in `src/middleware/auth.js` is responsible for authenticating the user based on their JWT token and populating `req.user` with the authenticated user's data.
+</Info>
+
+<Danger>
+  The `/profile/view` route in `src/routes/profile.js` attempts to re-verify the JWT token using `jwt.verify` with a hardcoded secret `"DEV@Tinder$790"`. This is a critical security vulnerability:
+  
+  *   **Hardcoded Secret**: Never embed secrets directly in your code. Use environment variables (e.g., `process.env.JWT_SECRET`).
+  *   **Redundant Verification**: The `userAuth` middleware should already handle token verification and attach the user object to `req`. Re-verifying the token with a hardcoded secret here is unnecessary and introduces a severe security risk if the hardcoded secret is compromised or differs from the actual secret used by the authentication middleware.
+  
+  **Action Required**: Remove the `jwt.verify` block from this route and rely solely on the `req.user` object provided by the `userAuth` middleware. Configure your JWT secret via environment variables.
+</Danger>
+
+#### Request
+
+This endpoint does not require any specific body parameters. Authentication is handled via a JWT token in the request cookies, processed by the `userAuth` middleware.
+
+#### Response
+
+Returns the authenticated user's profile object. The exact fields depend on the `User` model definition.
+
+<ResponseField name="user" type="object">
+  The authenticated user's profile data.
+  <Expandable title="user properties">
+    <ResponseField name="id" type="string">The unique identifier for the user.</ResponseField>
+    <ResponseField name="firstName" type="string">The user's first name.</ResponseField>
+    <ResponseField name="lastName" type="string">The user's last name.</ResponseField>
+    <ResponseField name="email" type="string">The user's email address.</ResponseField>
+    <ResponseField name="isVerified" type="boolean">Indicates if the user's email is verified.</ResponseField>
+    {/* ... other user fields as defined in the User model */}
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl -X GET https://api.example.com/profile/view \
+  -H "Cookie: token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "_id": "60c72b1f9b1d8f001c8e4d3a",
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john.doe@example.com",
+  "isVerified": true,
+  "createdAt": "2023-01-01T12:00:00.000Z",
+  "updatedAt": "2023-01-01T12:00:00.000Z",
+  "__v": 0
+}
+```
+</ResponseExample>
+
+### `PATCH /profile/edit`
+
+Allows an authenticated user to update their profile information. This route is protected by `userAuth` middleware and validates incoming data using `validateEditProfileData`.
+
+<Warning>
+  The `/profile/edit` route iterates through `req.body` and directly assigns properties to `loggedInUser`. This pattern, often called **Mass Assignment**, can be a severe security vulnerability if not strictly controlled.
+  
+  Ensure that `validateEditProfileData` in `src/utils/validation.js` explicitly whitelists *only* the fields that are safe for a user to update (e.g., `firstName`, `lastName`, `email`). Do not allow users to update sensitive fields like `role`, `isAdmin`, or `password` through this endpoint.
+  
+  **Recommendation**: Modify the update logic to explicitly set allowed fields, or ensure `validateEditProfileData` completely sanitizes and removes any forbidden fields from `req.body` before the `forEach` loop.
+</Warning>
+
+#### Request Parameters
+
+<ParamField name="firstName" type="string" optional>
+  The user's updated first name.
+</ParamField>
+<ParamField name="lastName" type="string" optional>
+  The user's updated last name.
+</ParamField>
+<ParamField name="email" type="string" optional>
+  The user's updated email address. Must be a valid email format.
+</ParamField>
+{/* Add any other profile fields that are allowed to be updated */}
+
+#### Response
+
+Returns a success message and the updated user object.
+
+<ResponseField name="message" type="string">
+  A success message confirming the profile update.
+</ResponseField>
+<ResponseField name="data" type="object">
+  The updated user profile object.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH https://api.example.com/profile/edit \
+  -H "Content-Type: application/json" \
+  -H "Cookie: token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "firstName": "Jane",
+    "email": "jane.doe.new@example.com"
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200 OK
+{
+  "message": "Jane, your profile is updated sucessfully",
+  "data": {
+    "_id": "60c72b1f9b1d8f001c8e4d3a",
+    "firstName": "Jane",
+    "lastName": "Doe",
+    "email": "jane.doe.new@example.com",
+    "isVerified": true,
+    "createdAt": "2023-01-01T12:00:00.000Z",
+    "updatedAt": "2023-01-01T12:00:00.000Z",
+    "__v": 0
+  }
+}
+```
+</ResponseExample>
+
+### `PATCH /profile/password`
+
+Allows an authenticated user to change their password. This route requires the current password for verification and a new password that meets strength requirements. It is protected by `userAuth` middleware.
+
+#### Request Parameters
+
+<ParamField name="currentPassword" type="string" required>
+  The user's current password for verification.
+</ParamField>
+<ParamField name="newPassword" type="string" required>
+  The new password the user wishes to set. Must meet strong password criteria.
+</ParamField>
+
+<Tip>
+  The `validator.isStrongPassword` utility is used to enforce password strength, which typically includes requirements for minimum length, uppercase/lowercase letters, numbers, and symbols.
+</Tip>
+
+#### Response
+
+Returns a simple success message upon successful password change.
+
+<ResponseField name="message" type="string">
+  A success message indicating the password was changed successfully.
+</ResponseField>
+
+<RequestExample>
+```bash cURL
+curl -X PATCH https://api.example.com/profile/password \
+  -H "Content-Type: application/json" \
+  -H "Cookie: token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{
+    "currentPassword": "OldStrongPassword!123",
+    "newPassword": "NewSuperStrongPassword@789"
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```text 200 OK
+Password changed sucessfully!
+```
+</ResponseExample>
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="400 Bad Request: 'Invaild Edit Request'">
+    This error typically occurs when the data sent in the `PATCH /profile/edit` request body does not pass the validation rules defined in `validateEditProfileData` from `src/utils/validation.js`.
+    <Steps>
+      <Step title="Check request body">
+        Ensure all required fields are present and valid according to your application's schema.
+      </Step>
+      <Step title="Review validation logic">
+        Inspect `src/utils/validation.js` to understand the specific rules applied to profile edit data.
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="400 Bad Request: 'Input fields are required.'">
+    For the `PATCH /profile/password` endpoint, both `currentPassword` and `newPassword` must be provided in the request body. If either is missing, this error is returned.
+    <Steps>
+      <Step title="Verify JSON payload">
+        Confirm your request body includes both `currentPassword` and `newPassword` keys with non-empty string values.
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="400 Bad Request: 'Please enter a Strong password.'">
+    This error indicates that the `newPassword` provided for the `PATCH /profile/password` endpoint does not meet the strength requirements enforced by `validator.isStrongPassword`.
+    <Steps>
+      <Step title="Increase password complexity">
+        Choose a `newPassword` that includes a mix of uppercase and lowercase letters, numbers, and symbols, and meets a minimum length requirement (e.g., 8-12 characters).
+      </Step>
+    </Steps>
+  </Accordion>
+  <Accordion title="400 Bad Request: 'Internal server error'">
+    This generic error from the `/profile/password` route often means an unexpected issue occurred on the server, potentially during password hashing or saving to the database. The server logs might provide more specific details.
+    <Steps>
+      <Step title="Check server logs">
+        The application logs (e.g., from `console.error`) on the server will contain the actual error message and stack trace.
+      </Step>
+      <Step title="Verify database connection">
+        Ensure the application can successfully connect to the database.
+      </Step>
+    </Steps>
+  </Accordion>
+</AccordionGroup>

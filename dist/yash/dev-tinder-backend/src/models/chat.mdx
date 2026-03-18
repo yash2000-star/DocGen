@@ -1,0 +1,119 @@
+# Chat Model
+
+This file defines the Mongoose schema and model for managing chat conversations and messages within the application.
+
+## Overview
+
+The Chat model is responsible for storing and retrieving chat data, including participant information and the history of messages exchanged between users. It interacts with the User model through references.
+
+<CardGroup cols={2}>
+  <Card title="Participants" icon="👥">
+    Stores ObjectIDs referencing the `User` model for each participant in a chat.
+  </Card>
+  <Card title="Messages" icon="💬">
+    Contains an array of message objects, each with sender information and text content.
+  </Card>
+</CardGroup>
+
+## Chat Schema
+
+The `chatSchema` defines the structure of a chat document in the MongoDB collection.
+
+### Participants
+
+<ParamField name="participants" type="Array<ObjectId>" required>
+  An array of ObjectIDs, each referencing a `User` document. These represent the users involved in the chat conversation.
+</ParamField>
+
+### Messages
+
+<ParamField name="messages" type="Array<Object>" required>
+  An array of message objects, where each object conforms to the `messageSchema`.
+  <Expandable title="messageSchema properties">
+    <ParamField name="senderId" type="ObjectId" required>
+      The ID of the user who sent the message. This is a reference to the `User` model.
+    </ParamField>
+    <ParamField name="text" type="String" required>
+      The content of the message.
+    </ParamField>
+    <ParamField name="createdAt" type="Date">
+      Timestamp indicating when the message was created. Automatically managed by Mongoose.
+    </ParamField>
+    <ParamField name="updatedAt" type="Date">
+      Timestamp indicating when the message was last updated. Automatically managed by Mongoose.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Model Export
+
+The `Chat` model is exported for use in other parts of the application.
+
+```javascript
+const mongoose = require("mongoose");
+
+const messageSchema = new mongoose.Schema(
+    {
+        senderId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            required: true,
+        },
+
+        text: {
+            type: String,
+            required: true,
+        },
+    },
+    { timestamps: true }
+)
+
+const chatSchema = new mongoose.Schema(
+    {
+        participants: [
+            { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+        ],
+        messages: [messageSchema]
+    }
+)
+
+const Chat = mongoose.model("Chat", chatSchema);
+
+module.exports =  { Chat }
+```
+
+## Usage
+
+This model is typically imported and used within `src/routes/chat.js` to manage chat-related operations, such as creating new chats, adding messages, and retrieving chat history.
+
+```javascript
+// Example usage in src/routes/chat.js (conceptual)
+const { Chat } = require('../models/chat');
+const { User } = require('../models/user'); // Assuming User model is available
+
+// ... (other route handlers)
+
+// To create a new chat
+async function createChat(userId1, userId2) {
+  const newChat = new Chat({
+    participants: [userId1, userId2],
+    messages: []
+  });
+  await newChat.save();
+  return newChat;
+}
+
+// To add a message to an existing chat
+async function addMessageToChat(chatId, senderId, messageText) {
+  const updatedChat = await Chat.findByIdAndUpdate(
+    chatId,
+    {
+      $push: {
+        messages: { senderId: senderId, text: messageText }
+      }
+    },
+    { new: true }
+  );
+  return updatedChat;
+}
+```

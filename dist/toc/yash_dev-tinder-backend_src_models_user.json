@@ -1,0 +1,47 @@
+[
+  {
+    "level": 1,
+    "text": "User Model",
+    "id": "user-model"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "User Schema Fields",
+    "id": "user-schema-fields"
+  },
+  {
+    "level": 2,
+    "text": "Methods",
+    "id": "methods"
+  },
+  {
+    "level": 3,
+    "text": "getJWT",
+    "id": "getjwt"
+  },
+  {
+    "level": 3,
+    "text": "validatePassword",
+    "id": "validatepassword"
+  },
+  {
+    "level": 2,
+    "text": "Usage Example",
+    "id": "usage-example"
+  },
+  {
+    "level": 2,
+    "text": "Indexing",
+    "id": "indexing"
+  },
+  {
+    "level": 2,
+    "text": "Exports",
+    "id": "exports"
+  }
+]

@@ -1,0 +1,56 @@
+# Razorpay Utility
+
+This utility file provides an initialized Razorpay client instance, configured with environment variables for API keys. It centralizes the Razorpay integration for the application.
+
+## Overview
+
+The `razorpay.js` file is responsible for setting up and exporting a pre-configured instance of the Razorpay SDK. This allows other parts of the application, such as payment routes or services, to interact with the Razorpay API without needing to manage the client initialization themselves.
+
+## Parameters / Configuration
+
+This utility does not export a function that accepts parameters directly. Instead, it relies on environment variables for configuration.
+
+<Warning>
+The Razorpay API keys are critical for processing payments. Ensure that `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are securely stored in your environment variables and are never committed to version control.
+</Warning>
+
+<ParamField name="RAZORPAY_KEY_ID" type="string" required>
+  Your Razorpay API Key ID.
+</ParamField>
+
+<ParamField name="RAZORPAY_KEY_SECRET" type="string" required>
+  Your Razorpay API Key Secret.
+</ParamField>
+
+## Razorpay Instance
+
+This file exports a single, initialized instance of the Razorpay client.
+
+### `instance`
+
+An initialized Razorpay client object.
+
+#### Usage Example
+
+```javascript
+// In another file, e.g., src/routes/payment.js
+
+const razorpayInstance = require("../utils/razorpay");
+
+// Example of creating a Razorpay order
+async function createOrder(amount, currency) {
+  try {
+    const order = await razorpayInstance.orders.create({
+      amount: amount * 100, // amount in the smallest currency unit
+      currency: currency,
+      receipt: `receipt_order_${Date.now()}`,
+    });
+    return order;
+  } catch (error) {
+    console.error("Error creating Razorpay order:", error);
+    throw error;
+  }
+}
+
+// ... rest of your payment logic
+```

@@ -1,0 +1,45 @@
+# Constants
+
+This file exports constants used throughout the application, primarily for pricing and configuration values.
+
+## Overview
+
+This utility file centralizes various constants. Currently, it exports pricing information for different membership tiers, which can be leveraged by modules like `payment.js` and `user.js` to determine subscription costs.
+
+<CardGroup cols={1}>
+  <Card title="Membership Pricing" icon="💰">
+    Defines monetary values for different membership levels, ensuring consistency across the application.
+  </Card>
+</CardGroup>
+
+## Membership Pricing Constants
+
+The `membershipAmount` object provides the cost for each membership tier.
+
+<ParamField name="membershipAmount" type="object">
+  An object containing the costs for each membership tier.
+  <Expandable title="membershipAmount properties">
+    <ParamField name="membershipAmount.silver" type="number">
+      The cost of the Silver membership tier.
+    </ParamField>
+    <ParamField name="membershipAmount.gold" type="number">
+      The cost of the Gold membership tier.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Usage Example
+
+Here's how you might use these constants in another part of your application, for example, when processing a payment for a gold membership:
+
+```javascript
+// Assuming this code is in src/routes/payment.js or src/services/payment.js
+const { membershipAmount } = require('../utils/constants');
+
+const goldMembershipCost = membershipAmount.gold;
+
+console.log(`The cost for a Gold membership is: $${goldMembershipCost}`);
+
+// You would then use this cost in your payment processing logic
+// e.g., stripe.charges.create({ amount: goldMembershipCost, ... })
+```

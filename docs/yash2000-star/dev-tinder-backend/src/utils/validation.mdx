@@ -1,0 +1,202 @@
+# Validation Utilities (`validation.js`)
+
+This file provides helper functions to validate incoming request data for user authentication and profile management. It ensures that signup data meets basic structural and security requirements and that profile update requests only modify permitted fields.
+
+## Overview
+
+The `validation.js` utility module is responsible for enforcing data integrity and security constraints on critical user-related data. It leverages the `validator` library for common validations like email format and password strength, playing a crucial role in maintaining data quality within the application.
+
+<CardGroup cols={2}>
+  <Card title="User Signup Validation" icon="✍️">
+    Ensures new user registration data meets defined requirements for first name, email, password, and gender.
+  </Card>
+  <Card title="Profile Edit Field Validation" icon="📝">
+    Checks if provided fields for profile updates are permitted, preventing unexpected data modifications.
+  </Card>
+</CardGroup>
+
+## `validateSignUpData` Function
+
+This function validates the `req.body` content specifically for new user registration, ensuring all required fields are present and meet basic validation rules.
+
+### Parameters
+
+<ParamField name="req" type="object" required>
+  The Express `request` object, which is expected to contain the user's signup data within `req.body`.
+  <Expandable title="req.body properties">
+    <ParamField name="req.body.firstName" type="string" required>
+      The user's first name. Must be at least 4 characters long.
+    </ParamField>
+    <ParamField name="req.body.lastName" type="string">
+      The user's last name. While destructured, this function does not strictly validate its content.
+    </ParamField>
+    <ParamField name="req.body.emailId" type="string" required>
+      The user's email address. Must be a valid email format (e.g., `user@example.com`).
+    </ParamField>
+    <ParamField name="req.body.password" type="string" required>
+      The user's password. This function uses `validator.isStrongPassword` which, by default, enforces a minimum length and character complexity. The error message indicates a minimum of 6 characters.
+      <Warning>
+        Passwords are sensitive information. Ensure that all communication channels transmitting password data (e.g., client to server) are secured with HTTPS to prevent interception. In production, always hash and salt passwords before storing them.
+      </Warning>
+    </ParamField>
+    <ParamField name="req.body.age" type="number">
+      The user's age. While destructured, this function does not strictly validate its content.
+    </ParamField>
+    <ParamField name="req.body.gender" type="string">
+      The user's gender. If provided, it must be one of: <Badge>male</Badge>, <Badge>female</Badge>, or <Badge>other</Badge> (case-insensitive).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+<ResponseField name="void" type="void">
+  This function does not return any value if all validations pass. It simply completes execution.
+</ResponseField>
+
+<Danger>
+  This function is designed to **throw a JavaScript `Error`** if any of the validation checks fail. It is critical to wrap calls to `validateSignUpData` in a `try...catch` block within your route handlers (e.g., in `src/routes/auth.js`) to gracefully handle invalid input and prevent application crashes, providing appropriate error responses to the client.
+</Danger>
+
+## `validateEditProfileData` Function
+
+This function checks if all fields provided in `req.body` for a profile update are present in an `allowedEditFields` list. It ensures that only sanctioned fields can be modified.
+
+### Parameters
+
+<ParamField name="req" type="object" required>
+  The Express `request` object, containing the fields a user wishes to update in their profile within `req.body`.
+  <Expandable title="req.body properties (any of these are allowed)">
+    <ParamField name="req.body.firstName" type="string">
+      The user's updated first name.
+    </ParamField>
+    <ParamField name="req.body.lastName" type="string">
+      The user's updated last name.
+    </ParamField>
+    <ParamField name="req.body.emailId" type="string">
+      The user's updated email address.
+    </ParamField>
+    <ParamField name="req.body.about" type="string">
+      A short description or biography about the user.
+    </ParamField>
+    <ParamField name="req.body.skills" type="array<string> | string">
+      A list of skills or a string describing the user's skills.
+    </ParamField>
+    <ParamField name="req.body.age" type="number">
+      The user's updated age.
+    </ParamField>
+    <ParamField name="req.body.photoUrl" type="string">
+      A URL pointing to the user's updated profile photo.
+    </ParamField>
+    <ParamField name="req.body.gender" type="string">
+      The user's updated gender. Must be one of: <Badge>male</Badge>, <Badge>female</Badge>, or <Badge>other</Badge>.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+<ResponseField name="isEditAllowed" type="boolean">
+  Returns `true` if every field key found in `req.body` is present in the internal `allowedEditFields` list. Returns `false` otherwise. This function only validates the *names* of the fields, not their content or data types.
+</ResponseField>
+
+## Usage Example
+
+The following example demonstrates how these validation utilities would be integrated into typical Express route handlers, such as those found in `src/routes/auth.js` and `src/routes/profile.js`.
+
+```javascript
+// Example in src/routes/auth.js or a corresponding controller
+
+const express = require('express');
+const router = express.Router();
+const { validateSignUpData, validateEditProfileData } = require('../utils/validation');
+const User = require('../models/user'); // Assuming a User model like src/models/user.js
+// const authMiddleware = require('../middleware/auth'); // Assuming authentication middleware
+
+/**
+ * @route POST /auth/signup
+ * @description Register a new user with provided details.
+ * @access Public
+ */
+router.post('/signup', async (req, res) => {
+  try {
+    // 1. Validate signup data
+    validateSignUpData(req);
+
+    // If validation passes, proceed with user creation
+    const { firstName, lastName, emailId, password, age, gender } = req.body;
+
+    // In a real application, you MUST hash the password before saving it!
+    // Example: const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = await User.create({
+      firstName,
+      lastName,
+      emailId,
+      password, // Use hashedPassword here in production
+      age,
+      gender
+    });
+
+    res.status(201).json({ message: 'User registered successfully', user: newUser });
+  } catch (error) {
+    // Catch validation errors thrown by validateSignUpData
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @route PATCH /profile
+ * @description Update authenticated user's profile details.
+ * @access Private (requires authMiddleware)
+ */
+router.patch('/profile', /* authMiddleware, */ async (req, res) => {
+  try {
+    // 1. Validate edit profile data (checks field names, not content)
+    const isAllowed = validateEditProfileData(req);
+
+    if (!isAllowed) {
+      return res.status(400).json({ error: 'One or more fields in the request are not allowed for editing.' });
+    }
+
+    // Assuming the user ID is extracted from an authentication middleware (e.g., req.user.id)
+    const userId = req.user.id; 
+    const updateFields = req.body;
+
+    // 2. Update the user in the database
+    const updatedUser = await User.findByIdAndUpdate(userId, updateFields, { new: true });
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    res.status(200).json({ message: 'Profile updated successfully', user: updatedUser });
+
+  } catch (error) {
+    // Handle potential database or other server errors
+    res.status(500).json({ error: error.message });
+  }
+});
+
+module.exports = router;
+```
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="`validateSignUpData` throws 'First name is required and must be at least 4 characters.'">
+    This error indicates that the `firstName` field in the request body is either missing, empty, or has fewer than 4 characters. Ensure the client sends a `firstName` that meets these criteria.
+  </Accordion>
+  <Accordion title="`validateSignUpData` throws 'Valid email is required.'">
+    This error occurs if `emailId` is missing from `req.body` or if the provided string does not conform to a standard email address format (e.g., `user@example.com`).
+  </Accordion>
+  <Accordion title="`validateSignUpData` throws 'Password should be at least 6 characters long.'">
+    The `password` field in `req.body` does not meet the minimum length or complexity requirements enforced by `validator.isStrongPassword`. Ensure the password is at least 6 characters. Consider guiding users on strong password creation on the client-side.
+  </Accordion>
+  <Accordion title="`validateSignUpData` throws 'Gender must be 'male', 'female', or 'other'.'">
+    If the `gender` field is provided in `req.body`, its value must be exactly one of "male", "female", or "other" (case-insensitive due to the internal `.toLowerCase()` conversion). Correct the gender value sent from the client.
+  </Accordion>
+  <Accordion title="`validateEditProfileData` returns `false` or blocks a legitimate update.">
+    This typically means the `req.body` sent for the profile update contains one or more field names that are not in the `allowedEditFields` list. Double-check the list of allowed fields (`firstName`, `lastName`, `emailId`, `about`, `skills`, `age`, `photoUrl`, `gender`) and ensure only these are included in the update request. This function explicitly disallows updating fields not on this list.
+  </Accordion>
+</AccordionGroup>

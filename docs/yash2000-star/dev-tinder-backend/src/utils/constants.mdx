@@ -1,0 +1,61 @@
+# Constants for Membership Tiers
+
+This file centralizes immutable constant values related to application-wide configurations, specifically defining the pricing for different membership tiers. It acts as a single source of truth for these critical values, promoting consistency and maintainability across the backend system.
+
+## Overview
+
+The `constants.js` utility file provides a centralized repository for frequently used, unchanging values within the application. Its primary export is the `membershipAmount` object, which delineates the costs associated with different user membership levels (e.g., Silver, Gold). This approach ensures that all modules, such as those handling payment processing (`src/routes/payment.js`, `src/models/payment.js`) or user profile updates, refer to the same consistent pricing structure.
+
+## Exported Constants
+
+### `membershipAmount`
+
+An object containing the pricing for various membership tiers. This constant should be used wherever membership costs are referenced to maintain consistency across the application.
+
+<ParamField name="silver" type="number" required>
+  The cost of the Silver membership tier. This value represents the price in the application's base currency.
+</ParamField>
+
+<ParamField name="gold" type="number" required>
+  The cost of the Gold membership tier. This value represents the price in the application's base currency.
+</ParamField>
+
+<Info>
+  The values within `membershipAmount` are hardcoded at compile time. For scenarios requiring dynamic pricing, localized currency conversions, or pricing retrieved from external sources, additional logic would need to be implemented within the consuming services (e.g., in `src/utils/razorpay.js` or `src/models/payment.js`).
+</Info>
+
+## Usage Example
+
+To access the membership amounts in other modules, import `membershipAmount` from this utility file.
+
+<CodeGroup>
+```javascript JavaScript
+// Example usage in a payment processing service (e.g., src/services/paymentService.js)
+const { membershipAmount } = require('../utils/constants'); // Adjust path based on consumer location
+
+/**
+ * Calculates the total cost for a given membership tier and quantity.
+ * @param {string} tier - The membership tier (e.g., 'silver', 'gold').
+ * @param {number} quantity - The number of memberships to purchase.
+ * @returns {number} The total calculated cost.
+ * @throws {Error} If an invalid membership tier is provided.
+ */
+function calculateMembershipCost(tier, quantity = 1) {
+  const normalizedTier = tier.toLowerCase();
+  if (membershipAmount[normalizedTier]) {
+    return membershipAmount[normalizedTier] * quantity;
+  }
+  throw new Error(`Invalid membership tier: '${tier}'. Available tiers are: ${Object.keys(membershipAmount).join(', ')}.`);
+}
+
+console.log('Cost for 1 Silver membership:', calculateMembershipCost('silver')); // Output: Cost for 1 Silver membership: 300
+console.log('Cost for 2 Gold memberships:', calculateMembershipCost('gold', 2));   // Output: Cost for 2 Gold memberships: 1400
+
+// Attempting to calculate for an invalid tier
+try {
+  calculateMembershipCost('platinum');
+} catch (error) {
+  console.error(error.message); // Output: Invalid membership tier: 'platinum'. Available tiers are: silver, gold.
+}
+```
+</CodeGroup>

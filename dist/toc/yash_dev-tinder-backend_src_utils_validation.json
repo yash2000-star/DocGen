@@ -1,0 +1,62 @@
+[
+  {
+    "level": 1,
+    "text": "Input Validation Utilities",
+    "id": "input-validation-utilities"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Parameters / Configuration",
+    "id": "parameters--configuration"
+  },
+  {
+    "level": 2,
+    "text": "Functions",
+    "id": "functions"
+  },
+  {
+    "level": 3,
+    "text": "`validateSignUpData`",
+    "id": "validatesignupdata"
+  },
+  {
+    "level": 4,
+    "text": "Parameters",
+    "id": "parameters"
+  },
+  {
+    "level": 4,
+    "text": "Example",
+    "id": "example"
+  },
+  {
+    "level": 3,
+    "text": "`validateEditProfileData`",
+    "id": "validateeditprofiledata"
+  },
+  {
+    "level": 4,
+    "text": "Parameters",
+    "id": "parameters-1"
+  },
+  {
+    "level": 4,
+    "text": "Returns",
+    "id": "returns"
+  },
+  {
+    "level": 4,
+    "text": "Example",
+    "id": "example-1"
+  },
+  {
+    "level": 2,
+    "text": "Common Errors / Troubleshooting",
+    "id": "common-errors--troubleshooting"
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "level": 1,
+    "text": "Chat Model",
+    "id": "chat-model"
+  },
+  {
+    "level": 2,
+    "text": "Overview",
+    "id": "overview"
+  },
+  {
+    "level": 2,
+    "text": "Chat Schema",
+    "id": "chat-schema"
+  },
+  {
+    "level": 3,
+    "text": "Participants",
+    "id": "participants"
+  },
+  {
+    "level": 3,
+    "text": "Messages",
+    "id": "messages"
+  },
+  {
+    "level": 2,
+    "text": "Model Export",
+    "id": "model-export"
+  },
+  {
+    "level": 2,
+    "text": "Usage",
+    "id": "usage"
+  }
+]

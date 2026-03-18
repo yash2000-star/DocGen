@@ -1,0 +1,180 @@
+# ConnectionRequest Model
+
+This module defines the `ConnectionRequest` Mongoose model, which is central to managing user-to-user connection requests within the application. It establishes the schema, data types, and critical validation logic for creating and managing connection requests between different users.
+
+## Overview
+
+The `ConnectionRequest` model serves as the blueprint for how users initiate, track, and resolve connections with each other in the application, akin to a "friend request" system. It captures essential information such as the sender, recipient, and the current state of the request. This model is integral to features that involve social interactions and networking between users, ensuring data consistency and preventing invalid connection states. It's primarily utilized by routes and services that handle user interactions, such as `src/routes/requests.js`.
+
+<CardGroup cols={2}>
+  <Card title="Schema Definition" icon="🗄️">
+    Outlines the data fields for connection requests, including user references and status management, leveraging Mongoose for MongoDB.
+  </Card>
+  <Card title="Built-in Validation" icon="✅">
+    Enforces business logic, specifically preventing a user from sending a connection request to themselves, directly within the model.
+  </Card>
+</CardGroup>
+
+## Schema Fields
+
+This section details the properties of a `ConnectionRequest` document as defined in its Mongoose schema. These fields represent the data stored in the `connectionRequests` collection in your MongoDB database.
+
+<ParamField name="fromUserId" type="mongoose.Schema.Types.ObjectId" required>
+  The unique identifier of the user who initiated this connection request. This field is a reference to the <Tooltip tip="The Mongoose model for users, defined in `src/models/user.js`.">`User`</Tooltip> collection, linking to the sender's profile.
+</ParamField>
+
+<ParamField name="toUserId" type="mongoose.Schema.Types.ObjectId" required>
+  The unique identifier of the user who is the recipient of this connection request. This also references the `User` collection, linking to the receiver's profile.
+</ParamField>
+
+<ParamField name="status" type="string" required>
+  The current status of the connection request. This field is a string with a strict set of allowed values, ensuring valid states for connection interactions.
+  <Info>
+    The permitted values for `status` are: <Badge>ignored</Badge>, <Badge>interested</Badge>, <Badge>accepted</Badge>, <Badge>rejected</Badge>.
+    Any attempt to set a status outside of these predefined values will result in a Mongoose validation error upon saving.
+  </Info>
+</ParamField>
+
+<ParamField name="createdAt" type="Date">
+  Automatically added by the Mongoose <Badge>timestamps</Badge> option. This field stores the date and time when the `ConnectionRequest` document was first created.
+</ParamField>
+
+<ParamField name="updatedAt" type="Date">
+  Automatically added by the Mongoose <Badge>timestamps</Badge> option. This field is updated every time the `ConnectionRequest` document is modified and saved.
+</ParamField>
+
+## ConnectionRequestModel
+
+The `ConnectionRequestModel` is the compiled Mongoose model, accessible via `module.exports` from this file. It provides all necessary methods for performing CRUD operations on `ConnectionRequest` documents within your MongoDB database.
+
+### `connectionRequestSchema.pre('save')` Hook
+
+A critical `pre('save')` middleware hook is defined on the `connectionRequestSchema`. This hook executes immediately before any `ConnectionRequest` document is saved to the database. Its purpose is to enforce a fundamental business rule: a user cannot send a connection request to themselves.
+
+<Danger>
+  If the `fromUserId` and `toUserId` fields of a `ConnectionRequest` document are identical at the time of saving, this `pre('save')` hook will throw a `new Error("Cannot send connection request to yourself!")`.
+  It is essential for your application's logic (e.g., in controllers or services like those in `src/routes/requests.js`) to anticipate and handle this specific error when creating or updating connection requests. Failure to do so will result in unhandled exceptions and potential server crashes.
+</Danger>
+
+## Usage Example
+
+The following example demonstrates how to import and interact with the `ConnectionRequestModel`. It illustrates creating both a valid connection request and scenarios where the model's built-in validation (the `pre('save')` hook and enum validation) prevents invalid saves.
+
+<CodeGroup>
+```javascript JavaScript
+const ConnectionRequest = require('../../src/models/connectionRequest');
+const mongoose = require('mongoose');
+
+// Mock User IDs for demonstration. In a real application, these would come from
+// actual User documents in your database.
+const mockUserId1 = new mongoose.Types.ObjectId('65b7d605a9c28e6840d0a7a1');
+const mockUserId2 = new mongoose.Types.ObjectId('65b7d605a9c28e6840d0a7a2');
+const mockUserId3 = new mongoose.Types.ObjectId('65b7d605a9c28e6840d0a7a3');
+
+async function demonstrateConnectionRequestModel() {
+  console.log('--- Demonstrating ConnectionRequest Model ---');
+
+  // 1. Successfully create a valid connection request
+  try {
+    const validRequest = new ConnectionRequest({
+      fromUserId: mockUserId1,
+      toUserId: mockUserId2,
+      status: 'interested'
+    });
+    await validRequest.save();
+    console.log('\n✅ Valid connection request created:');
+    console.log(validRequest);
+  } catch (error) {
+    console.error('\n❌ Error creating valid request (this should not happen):', error.message);
+  }
+
+  // 2. Attempt to create a connection request where fromUserId === toUserId
+  try {
+    const selfRequest = new ConnectionRequest({
+      fromUserId: mockUserId1,
+      toUserId: mockUserId1, // Sending request to self
+      status: 'interested'
+    });
+    await selfRequest.save();
+    console.log('\n⚠️ Unexpected: Self-request saved successfully:', selfRequest);
+  } catch (error) {
+    console.error('\n❌ Expected Error: Attempted self-request failed as expected.');
+    console.error('  Error message:', error.message);
+    <Warning>
+      This error demonstrates the `connectionRequestSchema.pre('save')` hook preventing a user from sending a request to themselves.
+    </Warning>
+  }
+
+  // 3. Attempt to create a connection request with an invalid status
+  try {
+    const invalidStatusRequest = new ConnectionRequest({
+      fromUserId: mockUserId2,
+      toUserId: mockUserId3,
+      status: 'pending' // 'pending' is not in the allowed enum values
+    });
+    await invalidStatusRequest.save();
+    console.log('\n⚠️ Unexpected: Invalid status request saved successfully:', invalidStatusRequest);
+  } catch (error) {
+    console.error('\n❌ Expected Error: Attempted invalid status request failed as expected.');
+    console.error('  Error message:', error.message);
+    <Note>
+      This error showcases Mongoose's built-in enum validation for the `status` field.
+    </Note>
+  }
+
+  console.log('\n--- Demonstration Complete ---');
+}
+
+// To run this example, ensure you have a MongoDB instance running and
+// uncomment the following lines to connect Mongoose:
+/*
+mongoose.connect('mongodb://localhost:27017/dev_tinder_test', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
+.then(() => {
+  console.log('MongoDB connection established for example.');
+  demonstrateConnectionRequestModel().finally(() => {
+    mongoose.disconnect();
+    console.log('MongoDB connection closed.');
+  });
+})
+.catch(err => console.error('MongoDB connection error:', err.message));
+*/
+```
+</CodeGroup>
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="`Error: Cannot send connection request to yourself!`">
+    <Check>
+      **Cause**: This error is intentionally thrown by the `connectionRequestSchema.pre('save')` hook when the `fromUserId` and `toUserId` fields are identical. This prevents users from initiating connection requests with their own profile.
+    </Check>
+    <Tip>
+      **Solution**: Implement an explicit check in your application's logic (e.g., within the controller handling the request creation or update) to compare `fromUserId` and `toUserId` *before* attempting to save the `ConnectionRequest`. If they are the same, return an appropriate error response to the client immediately, preventing the database operation and potential unhandled exceptions.
+    </Tip>
+    ```javascript
+    if (newConnectionRequest.fromUserId.equals(newConnectionRequest.toUserId)) {
+      return res.status(400).json({ message: 'You cannot send a connection request to yourself.' });
+    }
+    // Proceed with saving the request
+    ```
+  </Accordion>
+
+  <Accordion title="Mongoose Validation Error: `{VALUE} is incorrect status type`">
+    <Check>
+      **Cause**: This error occurs when you attempt to create or update a `ConnectionRequest` document with a `status` field value that is not one of the allowed `enum` values (`"ignored"`, `"interested"`, `"accepted"`, `"rejected"`).
+    </Check>
+    <Tip>
+      **Solution**: Always validate user-provided `status` values against the `enum` list before attempting to save or update a `ConnectionRequest`. You can do this at the API route level, ensuring only valid status transitions are processed.
+    </Tip>
+    ```javascript
+    const allowedStatuses = ["ignored", "interested", "accepted", "rejected"];
+    if (!allowedStatuses.includes(req.body.status)) {
+      return res.status(400).json({ message: `Invalid status provided. Must be one of: ${allowedStatuses.join(', ')}.` });
+    }
+    // Proceed with creating/updating the request
+    ```
+  </Accordion>
+</AccordionGroup>

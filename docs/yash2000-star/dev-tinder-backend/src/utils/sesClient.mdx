@@ -1,0 +1,140 @@
+# AWS SES Client Utility
+
+This module is responsible for initializing and configuring the AWS Simple Email Service (SES) client. It provides a pre-configured `SESClient` instance using environment variables for authentication, enabling other parts of the application to reliably send emails.
+
+## Overview
+The `sesClient.js` file establishes a connection to AWS SES, facilitating email communication within the application. It loads AWS credentials and region information from environment variables, creating an `SESClient` object that can then be used by email-sending utilities, such as `src/utils/sendEmail.js`, to interact with AWS SES.
+
+## Setup
+To properly utilize the AWS SES client, you must configure the necessary environment variables for authentication and specify the AWS region.
+
+<Steps>
+  <Step title="Install dotenv">
+    Ensure the `dotenv` package is installed in your project to load environment variables from a `.env` file.
+    ```bash
+    npm install dotenv
+    ```
+  </Step>
+  <Step title="Configure AWS Credentials">
+    Set your AWS access key, secret key, and the AWS region in your project's `.env` file. These credentials will be used by the `sesClient` to authenticate with AWS.
+    <Warning>
+      Your AWS `ACCESS_KEY` and `SECRET_ACCESS_KEY` grant programmatic access to your AWS account. They must be kept confidential, similar to passwords. Never hardcode them directly into your source code or commit them to public repositories.
+    </Warning>
+    ```ini title=".env"
+    AWS_ACCESS_KEY=YOUR_AWS_ACCESS_KEY_ID
+    AWS_SES_SECRET=YOUR_AWS_SECRET_ACCESS_KEY
+    AWS_REGION=us-east-1
+    ```
+    <Note>
+      The `REGION` constant is hardcoded as `"us-east-1"` directly within the `src/utils/sesClient.js` file. While you can define `AWS_REGION` in your `.env`, the hardcoded value will take precedence. If you need to use a different AWS region, you must modify the `REGION` constant in the source code.
+    </Note>
+  </Step>
+</Steps>
+
+## Configuration Parameters
+The `sesClient` is configured using the following environment variables, which are loaded at runtime.
+
+<ParamField name="AWS_ACCESS_KEY" type="string" required>
+  The AWS Access Key ID. This key is used for authenticating your application with AWS services and must have permissions to send emails via SES.
+</ParamField>
+
+<ParamField name="AWS_SES_SECRET" type="string" required>
+  The AWS Secret Access Key, which is the confidential component of your AWS credentials.
+  <Danger>
+    Exposing this secret key can lead to unauthorized access to your AWS account and services. It is critical to store this key securely and never hardcode it or commit it to version control.
+  </Danger>
+</ParamField>
+
+<ParamField name="AWS_REGION" type="string" default="us-east-1">
+  The AWS region where your SES service is deployed and configured.
+  <Info>
+    Note that the `REGION` is explicitly set to `"us-east-1"` inside `src/utils/sesClient.js`. While this environment variable is good practice, its value will be overridden by the hardcoded constant. To change the region, you must directly edit the source file.
+  </Info>
+</ParamField>
+
+## `sesClient` Export
+This module exports a single object, `sesClient`, which is an initialized instance of the AWS SDK's `SESClient`. This object is ready to be used for sending email commands to AWS SES.
+
+The `sesClient` object is configured with the specified AWS region and credentials, abstracting the setup process for other parts of the application that need to send emails.
+
+### Properties of the exported `sesClient` object
+The `sesClient` is an instance of the `SESClient` class from `@aws-sdk/client-ses`. It exposes various methods and properties as defined by the AWS SDK, but its primary use case is to be passed a `Command` object (e.g., `SendEmailCommand`) via its `send` method to execute SES operations.
+
+<Note>
+  The `sesClient` is intended to be imported by other utility modules, particularly `src/utils/sendEmail.js`, to handle the actual logic of composing and sending emails.
+</Note>
+
+## Usage Example
+Here's an example demonstrating how another utility, such as `src/utils/sendEmail.js`, would import and utilize the `sesClient` to send a verification email.
+
+```javascript
+// src/utils/sendEmail.js (example usage)
+const { sesClient } = require('./sesClient');
+const { SendEmailCommand } = require('@aws-sdk/client-ses');
+
+/**
+ * Sends a verification email to a specified recipient.
+ * @param {string} recipientEmail The email address of the recipient.
+ * @param {string} verificationLink The link for email verification.
+ * @returns {Promise<object>} The response from the SES service.
+ */
+async function sendVerificationEmail(recipientEmail, verificationLink) {
+  const params = {
+    Destination: {
+      ToAddresses: [recipientEmail],
+    },
+    Message: {
+      Body: {
+        Html: {
+          Charset: "UTF-8",
+          Data: `<h1>Verify your email</h1><p>Click <a href="${verificationLink}">here</a> to verify your account.</p>`,
+        },
+        Text: {
+          Charset: "UTF-8",
+          Data: `Please verify your email by clicking the link: ${verificationLink}`,
+        },
+      },
+    },
+    Source: "noreply@example.com", // This must be a verified SES sender identity
+    Subject: {
+      Charset: "UTF-8",
+      Data: "Email Verification",
+    },
+  };
+
+  try {
+    const command = new SendEmailCommand(params);
+    const response = await sesClient.send(command);
+    console.log("Email sent successfully:", response);
+    return response;
+  } catch (error) {
+    console.error("Failed to send email:", error);
+    throw error;
+  }
+}
+
+module.exports = { sendVerificationEmail };
+```
+
+## Common Errors / Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Missing or Invalid AWS Credentials">
+    If you encounter errors such as "Missing credentials in config" or "The security token included in the request is invalid", it typically indicates that your `AWS_ACCESS_KEY` or `AWS_SES_SECRET` environment variables are either not loaded correctly or are invalid.
+    <Tip>
+      Verify that your `.env` file is correctly formatted, that `require("dotenv").config();` is called at the very beginning of your application (e.g., in `app.js` or `sesClient.js`), and that your AWS keys are active and possess the necessary SES sending permissions in the AWS IAM console.
+    </Tip>
+  </Accordion>
+  <Accordion title="Incorrect AWS Region">
+    If emails fail to send or you receive region-specific errors, confirm that your AWS SES setup is located in the `us-east-1` region. This module currently hardcodes the region to `us-east-1`.
+    <Note>
+      To use a different region, you must directly edit the `REGION` constant in `src/utils/sesClient.js`. Additionally, ensure that your SES verified identities (sender email addresses/domains) are also configured within the same region.
+    </Note>
+  </Accordion>
+  <Accordion title="SES Sending Limits or Sandbox Mode Restrictions">
+    Newly created AWS accounts often start in SES sandbox mode, which imposes restrictions on the email addresses you can send to (must be verified) and limits your daily sending quota.
+    <Info>
+      To send emails to unverified recipients or to increase your sending volume, you must request production access for your SES account through the AWS console. Review your SES dashboard for your current sending limits and account status.
+    </Info>
+  </Accordion>
+</AccordionGroup>

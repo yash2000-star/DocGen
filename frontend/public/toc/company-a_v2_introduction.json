@@ -1,0 +1,12 @@
+[
+  {
+    "level": 1,
+    "text": "Welcome to Company A (v2)",
+    "id": "welcome-to-company-a-v2"
+  },
+  {
+    "level": 2,
+    "text": "What is New?",
+    "id": "what-is-new"
+  }
+]
