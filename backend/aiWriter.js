@@ -1,5 +1,6 @@
 require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const editDocs = require("./aiEditor");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
@@ -11,6 +12,30 @@ async function generateDocs(file, codeMap) {
     const prompt = `You are an elite Senior Technical Writer at a top-tier SaaS company like Stripe or Vercel.
 Your ONLY job is to read source code and produce MDX documentation that uses our EXACT component library.
 You must produce rich, beautiful, interactive documentation — not flat markdown. Use components generously and correctly.
+
+---
+## REQUIRED FRONTMATTER (CRITICAL)
+You MUST start every single document with a YAML frontmatter block. 
+This is used by our build engine to construct the navigation sidebar. Do not skip this.
+
+Format EXACTLY like this at the very top of your response:
+---
+title: "Human Readable Title"
+group: "Category Name"
+order: 10
+---
+
+Rules for Frontmatter:
+1. 'title': A clean, professional, human-readable name for the file (e.g., "Authentication Controller" instead of "auth.js").
+2. 'group': Categorize the file into ONE of these exact buckets (choose the best fit):
+   - "Getting Started" (for index.js, app.js, config, setup files)
+   - "Core Architecture" (for database connections, server setups)
+   - "API Reference" (for routes, endpoints, controllers)
+   - "Models & Data" (for database schemas, typescript types)
+   - "Components" (for UI components)
+   - "Utilities & Helpers" (for middleware, helper functions, shared logic)
+   - "Miscellaneous" (only if absolutely nothing else fits)
+3. 'order': Provide an integer to sort it. (e.g., 1-5 for Getting Started, 10-30 for Core/API, 80-100 for Utils).
 
 ---
 ## YOUR MDX COMPONENT CONTRACT
@@ -172,6 +197,12 @@ Use for: FAQ sections, collapsible details, optional deep-dive content, troubles
 ### API DOCUMENTATION COMPONENTS
 Use these for documenting function parameters, API route inputs/outputs, and config options.
 
+#### <ApiPlayground>
+Use for: creating an interactive API testing module. ALWAYS place this directly under the heading of an API route or Express endpoint.
+\`\`\`mdx
+<ApiPlayground method="POST" endpoint="/api/v1/users" />
+\`\`\`
+
 #### <ParamField>
 Use for: function parameters, API request body fields, config object properties.
 \`\`\`mdx
@@ -273,35 +304,9 @@ Use for: changelog entries, version history, recent changes sections.
 
 ---
 
-## COMPONENT USAGE DECISION GUIDE
-
-Use this to decide which component to use:
-
-| Situation | Component to Use |
-|---|---|
-| Helpful tip or extra context | <Note> |
-| Pro tip or recommended approach | <Tip> |
-| Neutral version/context info | <Info> |
-| Security risk, data loss risk | <Warning> |
-| Irreversible critical action | <Danger> |
-| Success / confirmed state | <Check> |
-| Sequential setup steps | <Steps> + <Step> |
-| Feature overview grid | <CardGroup> + <Card> |
-| Same code in multiple languages | <CodeGroup> |
-| FAQ / collapsible details | <AccordionGroup> + <Accordion> |
-| Function/API parameters | <ParamField> |
-| Function/API return values | <ResponseField> |
-| Full request + response pair | <RequestExample> + <ResponseExample> |
-| Inline status label | <Badge> |
-| Hover definition for a term | <Tooltip> |
-| Image with caption | <Frame> |
-| Changelog entry | <Update> |
-
----
-
 ## STRICT RULES — NEVER BREAK THESE
 
-1. OUTPUT ONLY raw MDX. No preamble, no "Here is your documentation", no explanation, no markdown fences around the entire output.
+1. OUTPUT ONLY raw MDX starting exactly with the \`---\` YAML frontmatter. No preamble, no "Here is your documentation", no markdown fences around the entire output.
 2. NEVER use plain blockquotes (>) for callouts. ALWAYS use <Note>, <Tip>, <Info>, <Warning>, <Danger>, or <Check>.
 3. NEVER use plain numbered lists (1. 2. 3.) for step-by-step procedures. ALWAYS use <Steps> + <Step>.
 4. NEVER invent component names not listed in this contract.
@@ -339,6 +344,7 @@ Document every parameter with <ParamField>.
 
 For each one:
 - One sentence description
+- <ApiPlayground method="..." endpoint="..." /> (ONLY if this is an API route)
 - <ParamField> for every input
 - <ResponseField> for every return value
 - <Warning> or <Danger> if there is any security or data risk
@@ -380,10 +386,14 @@ ${file.code}
         console.log(`\n✍️  Ghostwriter is reading: ${file.path}...`);
 
         const result = await model.generateContent(prompt);
-        const text = result.response.text();
+        const draftText = result.response.text();
 
-        console.log(`✅ Ghostwriter successfully generated the MDX document!`);
-        return text;
+        console.log(`✅ Ghostwriter generated the draft. Passing to Critic...`);
+        
+        // --- NEW: Pass BOTH the draft and the original source code! ---
+        const finalPolishedText = await editDocs(draftText, file.code);
+
+        return finalPolishedText;
     } catch (error) {
         console.error("❌ Ghostwriter failed:", error);
         return null;

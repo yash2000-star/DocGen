@@ -10,7 +10,6 @@ const GithubSlugger = require("github-slugger").default;
 const matter = require("gray-matter");
 
 //Embedding Tool
-
 require("dotenv").config({ path: path.join(__dirname, "../backend/.env") });
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
@@ -122,7 +121,6 @@ function extractTitle(markdown) {
 function extractHeadings(markdown) {
   const lines = markdown.split("\n");
   const headings = [];
-
   const slugger = new GithubSlugger();
 
   for (const line of lines) {
@@ -143,11 +141,70 @@ function extractHeadings(markdown) {
   return headings;
 }
 
-function extractSearchContent(markdown) {
-  return markdown
-    .replace(/[#`>*\-]/g, "")
-    .replace(/\n/g, " ")
-    .toLowerCase();
+// --- NEW SAAS-TIER SEARCH EXTRACTOR ---
+function extractSearchSections(markdown, fileTitle, route, tenant, version) {
+  const slugger = new GithubSlugger();
+  const lines = markdown.split("\n");
+  const sections = [];
+
+  let currentHeading = null;
+  let currentId = null;
+  let currentContent = [];
+  let fileIntroContent = [];
+
+  for (const line of lines) {
+    if (line.trim().startsWith("#")) {
+      // Save the previous section
+      if (currentHeading) {
+        const cleanText = currentContent.join(" ").replace(/[#`>*\-]/g, "").trim();
+        if (cleanText.length > 5) {
+          sections.push({
+            title: `${fileTitle} > ${currentHeading}`,
+            route: `${route}#${currentId}`, // Appends the hash for deep linking!
+            content: cleanText,
+            tenant,
+            version
+          });
+        }
+      } else {
+        fileIntroContent = [...currentContent];
+      }
+
+      // Start new section
+      currentHeading = line.replace(/^#+\s*/, "").trim();
+      currentId = slugger.slug(currentHeading);
+      currentContent = [];
+    } else {
+      currentContent.push(line.trim());
+    }
+  }
+
+  // Push the very last section
+  if (currentHeading) {
+    const cleanText = currentContent.join(" ").replace(/[#`>*\-]/g, "").trim();
+    if (cleanText.length > 5) {
+      sections.push({
+        title: `${fileTitle} > ${currentHeading}`,
+        route: `${route}#${currentId}`,
+        content: cleanText,
+        tenant,
+        version
+      });
+    }
+  } else {
+    fileIntroContent = [...currentContent];
+  }
+
+  // Push the root file as well
+  sections.push({
+    title: fileTitle,
+    route: route,
+    content: fileIntroContent.join(" ").replace(/[#`>*\-]/g, "").trim(),
+    tenant,
+    version
+  });
+
+  return sections;
 }
 
 async function build() {
@@ -177,16 +234,12 @@ async function build() {
       order,
       tenant: doc.tenant,
       version: doc.version,
+      group: result.meta.group || "Miscellaneous",
     });
 
-    const searchContent = extractSearchContent(result.raw);
-    searchIndex.push({
-      title,
-      route: doc.route,
-      content: searchContent,
-      tenant: doc.tenant,
-      version: doc.version,
-    });
+    // --- UPDATED: Pushing deep-linked sections into the index ---
+    const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
+    searchIndex.push(...sections);
 
     const shouldGenerateVectors = !targetRoute || doc.route === targetRoute || isWebhook;
 
@@ -334,37 +387,38 @@ async function build() {
 
 function generateSidebarTree(docs) {
   const tree = [];
+  
+  // Group all documents by their AI-assigned frontmatter group
+  const groupedDocs = docs.reduce((acc, doc) => {
+    const groupName = doc.group || "Miscellaneous";
+    if (!acc[groupName]) acc[groupName] = [];
+    acc[groupName].push(doc);
+    return acc;
+  }, {});
 
-  for (const doc of docs) {
-    const parts = doc.route.split("/");
-    let currentLevel = tree;
+  // Define the exact order the categories should appear in the sidebar
+  const categoryOrder = [
+    "Getting Started",
+    "Core Architecture",
+    "API Reference",
+    "Models & Data",
+    "Components",
+    "Utilities & Helpers",
+    "Miscellaneous"
+  ];
 
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-
-      if (i === parts.length - 1) {
-        currentLevel.push({
+  // Build the Mintlify-style array based on the ordered categories
+  categoryOrder.forEach(category => {
+    if (groupedDocs[category] && groupedDocs[category].length > 0) {
+      tree.push({
+        title: category,
+        children: groupedDocs[category].map(doc => ({
           title: doc.title,
-          route: doc.route,
-        });
-      } else {
-        let existing = currentLevel.find(
-          (item) =>
-            item.title.toLowerCase() === part.toLowerCase() && item.children,
-        );
-
-        if (!existing) {
-          existing = {
-            title: part.charAt(0).toUpperCase() + part.slice(1),
-            children: [],
-          };
-          currentLevel.push(existing);
-        }
-
-        currentLevel = existing.children;
-      }
+          route: doc.route
+        }))
+      });
     }
-  }
+  });
 
   return tree;
 }

@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const { exec } = require("child_process")
+const { spawn } = require("child_process"); // Swapped exec for spawn
 
 const cloneRepo = require("./gitServices");
 const scanCodeFiles = require("./codeScanner");
@@ -22,12 +22,15 @@ const supabase = createClient(
 );
 
 const askAI = require("./ai.service");
-const { stdout, stderr } = require("process");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    next();
+});
 app.use("/api/static", express.static(path.join(__dirname, "../dist")));
 
 app.get("/", (req, res) => {
@@ -43,7 +46,7 @@ app.post("/api/webhook", async (req, res) => {
     }
 
     if (!payload.commits || !payload.repository) {
-        return res.status(400).json({ message: "Not a vaild push event." })
+        return res.status(400).json({ message: "Not a valid push event." })
     }
 
     const repoUrl = payload.repository.clone_url;
@@ -66,11 +69,11 @@ app.post("/api/webhook", async (req, res) => {
 
     if (filesToProcess.length === 0) {
         console.log("[webhook] No relevant code files changed. Skipping AI generation.");
-        return res.status(200).json({ message: "No revelent files changed." });
+        return res.status(200).json({ message: "No relevant files changed." });
     }
 
     try {
-        console.log(`\n [Webhook] Detected changes in ${filesToProcess.length} files. Startign targeted update...`);
+        console.log(`\n [Webhook] Detected changes in ${filesToProcess.length} files. Starting targeted update...`);
 
         const downloadedFolderPath = await cloneRepo(repoUrl, projectName);
 
@@ -85,7 +88,7 @@ app.post("/api/webhook", async (req, res) => {
             const fullPath = path.join(downloadedFolderPath, relativeFilePath);
 
             if (fs.existsSync(fullPath)) {
-                const content = fs. readFileSync(fullPath, "utf-8");
+                const content = fs.readFileSync(fullPath, "utf-8");
                 const fileObj = { path: fullPath, code: content };
                 
                 const codeMap = analyzeRepo(downloadedFolderPath);
@@ -99,7 +102,7 @@ app.post("/api/webhook", async (req, res) => {
                     fs.mkdirSync(nestedTargetDir, { recursive: true });
                    }
 
-                   const mdFilePath =path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
+                   const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
 
                     fs.writeFileSync(mdFilePath, markdownOutput);
                     console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
@@ -109,21 +112,31 @@ app.post("/api/webhook", async (req, res) => {
         }
 
         console.log("[webhook] Waking up the factory Worker...");
+        
+        // Respond IMMEDIATELY to prevent GitHub webhook timeout
+        res.status(200).json({ message: `Successfully updated ${generatedCount} files. Build running in background.` });
+
         const buildScriptPath = path.join(__dirname, "../build/build.js");
 
-        exec(`node "${buildScriptPath}" --webhook`, (error, stdout, stderr) => {
-            if (error) {
-                console.error("Webhook Build failed:", stderr);
-                return;
+        // Spawn process in background and stream logs
+        const buildProcess = spawn("node", [buildScriptPath, "--webhook"]);
+
+        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
+        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
+
+        buildProcess.on("close", (code) => {
+            if (code !== 0) {
+                console.error("Webhook Build failed with code:", code);
+            } else {
+                console.log("Targeted webhook update complete!");
             }
-            console.log("Factory Worker Output:\n", stdout);
-            console.log("Targeted webhook update complete!");
         });
 
-        res.status(200).json({ message: `Successfully updated ${generatedCount} files.` });
     } catch (error) {
         console.error("Webhook Error:", error);
-        res.status(500).json({ error: "Failed to process webhooks." });
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to process webhooks." });
+        }
     }
 });
 
@@ -135,8 +148,14 @@ app.post("/api/github", async (req, res) => {
     }
 
     try {
-        console.log(`\n [GitHub API] Starting pipeline for ${repoUrl}...`);
+        // --- NEW ARCHITECTURE: Update 'projects' table directly ---
+        await supabase
+            .from('projects')
+            .update({ status: 'running' })
+            .eq('tenant_name', tenantName)
+            .eq('project_name', projectName);
 
+        console.log(`\n [GitHub API] Starting pipeline for ${repoUrl}...`);
         const downloadedFolderPath = await cloneRepo(repoUrl, projectName);
 
         console.log(`[GitHub API] Analyzing repository architecture...`);
@@ -147,7 +166,12 @@ app.post("/api/github", async (req, res) => {
         console.log(`[GitHub API] Inspector found ${foundFiles.length} code files.`);
 
         if (foundFiles.length === 0) {
-            return res.status(404).json({ error: "No vaild code files found in this repository."})
+            await supabase
+                .from('projects')
+                .update({ status: 'failed' })
+                .eq('tenant_name', tenantName)
+                .eq('project_name', projectName);
+            return res.status(404).json({ error: "No valid code files found in this repository." });
         }
 
         const targetDir = path.join(__dirname, "../docs", tenantName, projectName);
@@ -159,20 +183,18 @@ app.post("/api/github", async (req, res) => {
 
         for (const file of foundFiles) {
             await new Promise(resolve => setTimeout(resolve, 4000));
-
             const markdownOutput = await generateDocs(file, codeMap);
 
             if (markdownOutput) {
                 const relativePath = path.relative(downloadedFolderPath, file.path);
                 const parsedPath = path.parse(relativePath);
-
                 const nestedTargetDir = path.join(targetDir, parsedPath.dir);
+                
                 if (!fs.existsSync(nestedTargetDir)) {
                     fs.mkdirSync(nestedTargetDir, { recursive: true });
                 }
 
                 const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
-
                 fs.writeFileSync(mdFilePath, markdownOutput);
                 console.log(`Saved AI Doc: ${mdFilePath}`);
                 generatedCount++;
@@ -180,28 +202,102 @@ app.post("/api/github", async (req, res) => {
         }
 
         console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
+        
+        // Respond IMMEDIATELY before the build script runs
+        res.json({
+            message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
+            fileProcessed: generatedCount,
+            tenant: tenantName,
+            version: projectName
+        });
+
         const buildScriptPath = path.join(__dirname, "../build/build.js");
 
-        exec(`node "${buildScriptPath}"`, { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error("Factory Build failed:", stderr);
-                return res.status(500).json({ error: "Docs generated, but build failed." })
+        // Spawn in background
+        const buildProcess = spawn("node", [buildScriptPath]);
+
+        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
+        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
+
+        buildProcess.on("close", async (code) => {
+            if (code !== 0) {
+                console.error("Factory Build failed with code:", code);
+                await supabase
+                    .from('projects')
+                    .update({ status: 'failed' })
+                    .eq('tenant_name', tenantName)
+                    .eq('project_name', projectName);
+            } else {
+                console.log("Factory Worker finished successfully!");
+                await supabase
+                    .from('projects')
+                    .update({ status: 'successful' })
+                    .eq('tenant_name', tenantName)
+                    .eq('project_name', projectName);
             }
-
-            console.log("Factory Worker Output:\n", stdout);
-
-            res.json({
-                message: "GitHub Repository successfully converted into documentation!",
-                fileProcessed: generatedCount,
-                tenant: tenantName,
-                version: projectName
-            });
         });
+
     } catch (error) {
         console.error("GitHub API Error", error);
-        res.status(500).json({ error: "Failed to process the GitHub repository." })
+        await supabase
+            .from('projects')
+            .update({ status: 'failed' })
+            .eq('tenant_name', tenantName)
+            .eq('project_name', projectName);
+            
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to process the GitHub repository." });
+        }
     }
-})
+});
+
+app.post('/api/settings', async (req, res) => {
+    const { tenant, version, primaryColor, logoUrl, fontFamily, darkMode } = req.body;
+
+    const config = {
+        name: version,
+        theme: { primaryColor, logoUrl, fontFamily, darkMode },
+        updatedAt: new Date().toISOString()
+    };
+
+    const configPath = path.join(__dirname, '../docs', tenant, version, 'docgen.json');
+    const configDir  = path.dirname(configPath);
+
+    if (!fs.existsSync(configDir)) {
+        return res.status(404).json({ error: 'Project not found' });
+    }
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+    // Respond immediately
+    res.json({ message: 'Settings saved. Rebuilding site in background...' });
+
+    const buildScriptPath = path.join(__dirname, '../build/build.js');
+    const buildProcess = spawn("node", [buildScriptPath]);
+    
+    buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
+    buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
+});
+
+app.delete('/api/projects/:tenant/:version', async (req, res) => {
+    const { tenant, version } = req.params;
+
+    const { error: supaErr } = await supabase
+        .from('doc_vectors')
+        .delete()
+        .eq('tenant', tenant)
+        .eq('version', version);
+        
+    if (supaErr) return res.status(500).json({ error: 'Failed to delete vectors' });
+
+    const docsDir = path.join(__dirname, '../docs', tenant, version);
+    const distDir = path.join(__dirname, '../dist', tenant, version);
+
+    if (fs.existsSync(docsDir)) fs.rmSync(docsDir, { recursive: true, force: true });
+    if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
+
+    res.json({ message: 'Project deleted successfully' });
+});
 
 app.post("/api/docs", (req, res) => {
     const { tenant, version, fileName, content } = req.body;
@@ -222,27 +318,82 @@ app.post("/api/docs", (req, res) => {
         fs.writeFileSync(filePath, content);
         console.log(`Saved new document: ${filePath}`);
 
+        // Respond immediately
+        res.json({
+            message: "Document saved! Engine is rebuilding in background.",
+            tenant,
+            version,
+            fileName
+        });
+
         const buildScriptPath = path.join(__dirname, "../build/build.js");
         const targetRoute = `${tenant}/${version}/${fileName}`;
 
-        exec(`node "${buildScriptPath}" ${targetRoute}`, (error, stdout, stderr) => {
-            if (error) {
-                console.log("Build failed:", stderr);
-                return res.status(500).json({ error: "File saved, but build failed." });
-            }
+        const buildProcess = spawn("node", [buildScriptPath, targetRoute]);
 
-            console.log("Compiler Output:", stdout);
-
-            res.json({
-                message: "Document saved and Engine successfully rebuilt!",
-                tenant,
-                version,
-                fileName
-            });
+        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
+        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
+        
+        buildProcess.on("close", (code) => {
+             if (code !== 0) {
+                 console.error(`Build failed for ${fileName} with code ${code}`);
+             } else {
+                 console.log(`Engine successfully rebuilt for ${fileName}!`);
+             }
         });
+
     } catch (err) {
         console.error("Error saving file:", err);
-        res.status(500).json({ error: "Failed to save the file." });
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to save the file." });
+        }
+    }
+});
+
+// --- SAAS FEATURE: API Playground Proxy ---
+// This safely routes requests from the React frontend to bypass CORS
+app.post("/api/proxy", async (req, res) => {
+    const { targetUrl, targetMethod, payload } = req.body;
+
+    if (!targetUrl || !targetMethod) {
+        return res.status(400).json({ error: "Missing targetUrl or targetMethod." });
+    }
+
+    try {
+        console.log(`\n🔌 [Proxy] Forwarding ${targetMethod} request to: ${targetUrl}`);
+        
+        // Construct the fetch options
+        const fetchOptions = {
+            method: targetMethod,
+            headers: {
+                "Content-Type": "application/json",
+                // If you add Authentication headers to your playground later, they pass through here!
+            }
+        };
+
+        // Only attach a body if it's not a GET or DELETE request
+        if (payload && targetMethod !== "GET" && targetMethod !== "DELETE") {
+            fetchOptions.body = JSON.stringify(payload);
+        }
+
+        // The Node.js server makes the actual request (Bypassing CORS!)
+        const externalResponse = await fetch(targetUrl, fetchOptions);
+        
+        // Parse the response from the destination server
+        const data = await externalResponse.json().catch(() => ({}));
+
+        // Send the data safely back to the React frontend
+        res.status(externalResponse.status).json({
+            status: externalResponse.status,
+            data: data
+        });
+
+    } catch (error) {
+        console.error("❌ [Proxy] Request failed:", error.message);
+        res.status(500).json({ 
+            error: "Failed to reach the target URL.", 
+            details: error.message 
+        });
     }
 });
 
@@ -281,51 +432,6 @@ app.post("/api/ask", async (req, res) => {
         const answer = await askAI(question, contextString);
 
         res.json({ answer: answer });
-
-        /*if (!topChunks || topChunks.length === 0) {
-            console.log("No relevant documentation found in the cloud.");
-            return res.json({ answer: "I'm sorry, I cannot find the answer to that in the current documentation."});
-        }
-
-        const chunksPath = path.join(__dirname, "../dist", tenant, version, "aiChunks.json");
-
-        console.log("🕵️ DEBUG: Node is looking for ->", chunksPath);
-
-        if (!fs.existsSync(chunksPath)) {
-            return res.status(404).json({ error: "Documentation not found for this tenant." });
-        }
-
-        const rawData = fs.readFileSync(chunksPath, "utf-8");
-        const aiChunks = JSON.parse(rawData);
-
-        console.log(`\n Calculating math vector for questions: "${question}"`);
-
-        const embedResult = await embeddingModel.embedContent(question);
-        const questionVector = embedResult.embedding.values;
-
-        const scoredChunks = aiChunks.map(chunk => {
-            if (!chunk.embedding) {
-                return { ...chunk, score: -1};
-            }
-
-            const mathScore = cosineSimilarity(questionVector, chunk.embedding);
-
-            return { ...chunk, score: mathScore};
-        });
-
-        const topChunks = scoredChunks
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 3);
-
-        console.log("Top 3 Match Scores:");
-        topChunks.forEach((c, i) => console.log(` ${i + 1}: Score ${c.score.toFixed(3)} -> ${c.text.substring(0,40)}...`));
-
-        const contextString = topChunks.map(c => c.text).join("\n\n");
-
-        console.log("Sending context to Gemini...");
-        const answer = await askAI(question, contextString);
-
-        res.json({ answer: answer }); */
 
     } catch (error) {
         console.error("Ask API Error:", error);

@@ -1,71 +1,67 @@
 import { useEffect, useState } from "react";
+import { useParams } from "react-router-dom"; // <-- Dynamic URL variables
 
 export default function Toc() {
+    const { tenant, version } = useParams();
     const [toc, setToc] = useState([]);
-    const [currentVersion, setCurrentVersion] = useState("v1");
-    const [currentTenant, setCurrentTenant] = useState("company-a"); 
+    const [activeRoute, setActiveRoute] = useState("index");
 
-    useEffect(() => {
-        function handleVersionChange(event) {
-            setCurrentVersion(event.detail);
-            setToc([]);
-        }
-        window.addEventListener("version-change", handleVersionChange);
-        return () => window.removeEventListener("version-change", handleVersionChange);
-    }, []);
-
-    useEffect(() => {
-        function handleTenantChange(event) {
-            setCurrentTenant(event.detail);
-            setToc([]);
-        }
-        window.addEventListener("tenant-change", handleTenantChange);
-        return () => window.removeEventListener("tenant-change", handleTenantChange);
-    }, []);
-
+    // Listen for the current document changing
     useEffect(() => {
         function handleDocChange(event) {
-            const route = event.detail;
-
-            if (!route) {
-                console.log("Ignored empty route!");
-                return; 
-            }
-
-            const tocFile = `${currentTenant}_${currentVersion}_${route.replace(/\//g, "_")}`;
-
-            fetch(`/toc/${tocFile}.json`)
-            .then(res => res.json())
-            .then(data => {
-                setToc(data);
-            })
-            .catch(err => {
-                console.log("No TOC found for this page.");
-                setToc([]);
-            });
+            if (event.detail) setActiveRoute(event.detail);
         }
-
         window.addEventListener("doc-change", handleDocChange);
+        return () => window.removeEventListener("doc-change", handleDocChange);
+    }, []);
 
-        return () => {
-            window.removeEventListener("doc-change", handleDocChange);
-        };
-    }, [currentTenant, currentVersion]);
+    // Fetch the specific TOC file when the route changes
+    useEffect(() => {
+        if (!tenant || !version || !activeRoute) return;
+
+        const cleanRoute = activeRoute.replace(/\//g, "_");
+        
+        fetch(`http://localhost:4000/api/static/toc/${tenant}_${version}_${cleanRoute}.json`)
+        .then(res => {
+            if (!res.ok) throw new Error("TOC not found");
+            return res.json();
+        })
+        .then(data => setToc(data))
+        .catch(err => {
+            console.log("No TOC found for this page.");
+            setToc([]);
+        });
+    }, [tenant, version, activeRoute]);
+
+    if (toc.length === 0) return null; // Don't show anything if no headings
 
     return (
-        <div>
-            <h4>On this page</h4>
+        <div style={{ borderLeft: "1px solid #e2e8f0", paddingLeft: "16px" }}>
+            <h4 style={{ 
+                fontSize: "12px", 
+                fontWeight: "600", 
+                color: "#0f172a", 
+                textTransform: "uppercase", 
+                letterSpacing: "0.5px",
+                marginBottom: "12px",
+                marginTop: 0
+            }}>
+                On this page
+            </h4>
 
-            {toc.map((item, index) => (
-                <div 
-                key={index}
-                style={{
-                    marginLeft: `${(item.level - 1) * 10}px`
-                }}
-                >
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {toc.map((item, index) => (
                     <a 
+                        key={index}
                         href={`#${item.id}`}
-
+                        style={{
+                            marginLeft: `${(item.level - 1) * 12}px`,
+                            textDecoration: "none",
+                            fontSize: "13px",
+                            color: "#64748b",
+                            transition: "color 0.2s",
+                            lineHeight: "1.4"
+                        }}
                         onClick={(e) => {
                             e.preventDefault(); 
                             const element = document.getElementById(item.id);
@@ -73,11 +69,13 @@ export default function Toc() {
                                 element.scrollIntoView({ behavior: "smooth", block: "start" });
                             }
                         }}
+                        onMouseOver={(e) => e.currentTarget.style.color = "var(--primary-brand)"}
+                        onMouseOut={(e) => e.currentTarget.style.color = "#64748b"}
                     >
                         {item.text}
                     </a>
-                </div>
-            ))}
+                ))}
+            </div>
         </div>
     )
 }

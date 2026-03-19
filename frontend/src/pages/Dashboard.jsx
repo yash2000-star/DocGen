@@ -3,18 +3,23 @@ import { getUserProjects } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
 import ProjectCard from "../components/dashboard/ProjectCard";
 import EmptyState from "../components/dashboard/EmptyState";
+import { useNavigate } from "react-router-dom";
 
 export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    // Fetch projects directly from Supabase on mount
     getUserProjects().then(({ data }) => {
-      setProjects(data || []);
-      setLoading(false);
+      if (data && data.length > 0) {
+        navigate(`/dashboard/${data[0].id}`, { replace: true });
+      } else {
+        setProjects([]); 
+        setLoading(false); 
+      }
     });
-  }, []);
+  }, [navigate]);
 
   if (loading) {
     return (

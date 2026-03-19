@@ -5,6 +5,7 @@ import { Card, CardGroup } from "./Card"
 import { Accordion, AccordionGroup } from "./Accordion";
 import { Expandable } from "./Expandable";
 import { CodeGroup } from "./CodeGroup";
+import { ApiPlayground } from "./ApiPlayground";
 
 export const Note = ({ children }) => {
     return (
@@ -418,4 +419,4 @@ export const ResponseExample = ({ children }) => {
   );
 };
 
-export { CodeBlock, Tabs, Tab, Card, CardGroup, Accordion, AccordionGroup, Expandable, CodeGroup };
+export { CodeBlock, Tabs, Tab, Card, CardGroup, Accordion, AccordionGroup, Expandable, CodeGroup, ApiPlayground };

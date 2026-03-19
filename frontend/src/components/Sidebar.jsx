@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
-import Search from "./Search";
-import VersionSelector from "./VersionSelector";
-import TenantSelector from "./TenantSelector";
+import { useParams } from "react-router-dom"; // <-- ADDED: Pull variables from URL
+import SearchModal from "./SearchModal";
 
 export default function Sidebar() {
+  const { tenant, version } = useParams(); // <-- Dynamic!
   const [sidebar, setSidebar] = useState([]);
-  const [currentVersion, setCurrentVersion] = useState("dev-tinder-backend");
-  const [currentTenant, setCurrentTenant] = useState("yash");
-  const [activeRoute, setActiveRoute] = useState("");
+  const [activeRoute, setActiveRoute] = useState("index");
 
   useEffect(() => {
-    fetch(`http://localhost:4000/api/static/${currentTenant}/${currentVersion}/sidebar.json`)
+    if (!tenant || !version) return;
+
+    fetch(`http://localhost:4000/api/static/${tenant}/${version}/sidebar.json`)
       .then((res) => {
           if (!res.ok) throw new Error("Sidebar not found");
           return res.json();
@@ -20,29 +20,11 @@ export default function Sidebar() {
           console.log("No sidebar for this version/tenant");
           setSidebar([]);
       });
-  }, [currentVersion, currentTenant]);
-
-  useEffect(() => {
-    function handleVersionChange(event) {
-      setCurrentVersion(event.detail);
-      setActiveRoute("");
-    }
-    window.addEventListener("version-change", handleVersionChange);
-    return () => window.removeEventListener("version-change", handleVersionChange)
-  }, [])
-
-  useEffect(() => {
-    function handleTenantChange(event) {
-      setCurrentTenant(event.detail);
-      window.dispatchEvent(new CustomEvent("version-change", { detail: "dev-tinder-backend" }));
-    }
-    window.addEventListener("tenant-change", handleTenantChange);
-    return () => window.removeEventListener("tenant-change", handleTenantChange);
-  }, []);
+  }, [tenant, version]);
 
   useEffect(() => {
     function handleDocChange(event) {
-      setActiveRoute(event.detail);
+      if (event.detail) setActiveRoute(event.detail);
     }
     window.addEventListener("doc-change", handleDocChange);
     return () => window.removeEventListener("doc-change", handleDocChange);
@@ -53,35 +35,44 @@ export default function Sidebar() {
       // IF IT IS A FOLDER
       if (item.children) {
         return (
-          <div key={index} style={{ marginTop: "12px" }}>
-            <strong style={{ color: "#475569", fontSize: "14px", textTransform: "uppercase" }}>
-              📁 {item.title}
+          <div key={index} style={{ marginTop: "24px" }}>
+            <strong style={{ 
+              color: "#0f172a", // Darker Mintlify Header Color
+              fontSize: "13px", 
+              fontWeight: "600",
+              textTransform: "capitalize",
+              paddingLeft: "12px",
+              display: "block",
+              marginBottom: "8px"
+            }}>
+              {item.title}
             </strong>
-            <div style={{ paddingLeft: "15px", marginTop: "5px", borderLeft: "1px solid #e2e8f0" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
               {renderItems(item.children)}
             </div>
           </div>
         );
       }
 
-      // 3. ADDED: Check if this specific item is the active one
+      // IF IT IS A FILE
       const isActive = activeRoute === item.route;
 
-      // IF IT IS A FILE
       return (
-        <div key={index} style={{ margin: "2px 0" }}>
+        <div key={index}>
           <a
             href="#"
             style={{ 
               textDecoration: "none", 
               display: "block",
-              padding: "6px 10px",
+              padding: "6px 12px",
               borderRadius: "6px",
-              fontSize: "14px",
-              color: isActive ? "#2563eb" : "#64748b",
-              fontWeight: isActive ? "600" : "400",
-              backgroundColor: isActive ? "#eff6ff" : "transparent",
-              transition: "all 0.2s ease-in-out"
+              fontSize: "13px",
+              color: isActive ? "var(--primary-brand)" : "#64748b",
+              fontWeight: isActive ? "600" : "500",
+              backgroundColor: isActive ? "rgba(15, 186, 129, 0.1)" : "transparent",
+              transition: "all 0.1s ease",
+              borderLeft: isActive ? "2px solid var(--primary-brand)" : "2px solid transparent",
+              marginLeft: "-2px" // Pulls the border flush with the edge
             }}
             onClick={(e) => {
               e.preventDefault();
@@ -91,8 +82,14 @@ export default function Sidebar() {
                 }),
               );
             }}
+            onMouseOver={(e) => {
+               if(!isActive) e.currentTarget.style.color = "#0f172a";
+            }}
+            onMouseOut={(e) => {
+               if(!isActive) e.currentTarget.style.color = "#64748b";
+            }}
           >
-            📄 {item.title}
+            {item.title}
           </a>
         </div>
       );
@@ -100,11 +97,8 @@ export default function Sidebar() {
   }
 
   return (
-    <div style={{ paddingRight: "10px" }}>
-      <TenantSelector />
-      <VersionSelector />
-      <Search />
-      <h3 style={{ marginTop: "20px" }}>Docs</h3>
+    <div style={{ padding: "24px 12px 24px 24px" }}>
+      {/* We removed the bulky selectors here to match Mintlify's clean look */}
       {renderItems(sidebar)}
     </div>
   );

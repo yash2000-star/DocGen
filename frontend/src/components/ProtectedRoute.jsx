@@ -4,11 +4,11 @@ import { useAuth } from "../context/AuthContext";
 export default function ProtectedRoute({ children }) {
   const { user } = useAuth();
 
-  // If there is no user logged in, kick them back to the login page
+  // If there is no user logged in, gracefully route them to the landing page
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/" replace />;
   }
 
-  // If they are logged in, let them see the page
+  // If they are logged in, let them see the dashboard
   return children;
 }

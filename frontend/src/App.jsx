@@ -4,13 +4,14 @@ import NewProject from "./pages/NewProject";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import DocEngine from "./pages/DocEngine";
-import Dashboard from "./pages/Dashboard"; // <-- Imported Dashboard
+import Dashboard from "./pages/Dashboard"; 
 import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectOverview from "./pages/ProjectOverview";
+import ProjectSettings from "./pages/ProjectSettings";
 
 function PublicRoute({ children }) {
   const { user } = useAuth();
-  if (user) return <Navigate to="/dashboard" replace />; // <-- Redirects to dashboard now, not docs
+  if (user) return <Navigate to="/dashboard" replace />; 
   return children;
 }
 
@@ -44,15 +45,15 @@ function App() {
           />
 
           <Route 
-  path="/dashboard/new" 
-  element={
-    <ProtectedRoute>
-      <NewProject />
-    </ProtectedRoute>
-  } 
-/>
+            path="/dashboard/new" 
+            element={
+              <ProtectedRoute>
+                <NewProject />
+              </ProtectedRoute>
+            } 
+          />
 
-<Route 
+          <Route 
             path="/dashboard/:id" 
             element={
               <ProtectedRoute>
@@ -60,10 +61,21 @@ function App() {
               </ProtectedRoute>
             } 
           />
-          
-          {/* We will leave this here for now so your MDX engine still works! */}
+
+          {/* Project Settings Page */}
           <Route 
-            path="/docs" 
+            path="/dashboard/:id/settings" 
+            element={
+              <ProtectedRoute>
+                <ProjectSettings />
+              </ProtectedRoute>
+            } 
+          />
+          
+          {/* --- UPDATED ROUTE --- */}
+          {/* Added :tenant and :version so the router knows how to handle the dynamic iframe URL */}
+          <Route 
+            path="/docs/:tenant/:version" 
             element={
               <ProtectedRoute>
                 <DocEngine />
