@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/auth";
 import { createProject, updateProjectStatus } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
+import { apiFetch } from '../lib/api';
 
 export default function NewProject() {
   const navigate = useNavigate();
@@ -57,7 +58,7 @@ export default function NewProject() {
 
     try {
       // 2. Call the existing backend route
-      const res = await fetch("http://localhost:4000/api/github", {
+      const res = await apiFetch(`/api/github`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

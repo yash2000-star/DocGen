@@ -75,7 +75,9 @@ export default function SearchModal() {
 
   useEffect(() => {
     if (!tenant || !version) return;
-    fetch(`http://localhost:4000/api/static/${tenant}/${version}/search-index.json`, { cache: "no-store" })
+
+    const API_URL = import.meta.env.VITE_API_URL;
+    fetch(`${API_URL}/api/static/${tenant}/${version}/search-index.json`, { cache: "no-store" })
       .then(res => res.json())
       .then(data => setIndex(data))
       .catch(err => console.error("Search index failed to load:", err));

@@ -1,16 +1,24 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom"; // <-- ADDED: Pull variables from URL
+import { useParams } from "react-router-dom"; 
 import SearchModal from "./SearchModal";
 
-export default function Sidebar() {
-  const { tenant, version } = useParams(); // <-- Dynamic!
+// --- NEW: Accept the custom props! ---
+export default function Sidebar({ customTenant, customVersion }) {
+  const params = useParams();
+  
+  // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
+  const tenant = customTenant || params.tenant;
+  const version = customVersion || params.version;
+  
   const [sidebar, setSidebar] = useState([]);
   const [activeRoute, setActiveRoute] = useState("index");
 
   useEffect(() => {
     if (!tenant || !version) return;
 
-    fetch(`http://localhost:4000/api/static/${tenant}/${version}/sidebar.json`)
+    const API_URL = import.meta.env.VITE_API_URL;
+
+    fetch(`${API_URL}/api/static/${tenant}/${version}/sidebar.json`)
       .then((res) => {
           if (!res.ok) throw new Error("Sidebar not found");
           return res.json();
@@ -37,7 +45,7 @@ export default function Sidebar() {
         return (
           <div key={index} style={{ marginTop: "24px" }}>
             <strong style={{ 
-              color: "#0f172a", // Darker Mintlify Header Color
+              color: "#0f172a", 
               fontSize: "13px", 
               fontWeight: "600",
               textTransform: "capitalize",
@@ -72,7 +80,7 @@ export default function Sidebar() {
               backgroundColor: isActive ? "rgba(15, 186, 129, 0.1)" : "transparent",
               transition: "all 0.1s ease",
               borderLeft: isActive ? "2px solid var(--primary-brand)" : "2px solid transparent",
-              marginLeft: "-2px" // Pulls the border flush with the edge
+              marginLeft: "-2px" 
             }}
             onClick={(e) => {
               e.preventDefault();
@@ -98,7 +106,6 @@ export default function Sidebar() {
 
   return (
     <div style={{ padding: "24px 12px 24px 24px" }}>
-      {/* We removed the bulky selectors here to match Mintlify's clean look */}
       {renderItems(sidebar)}
     </div>
   );

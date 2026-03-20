@@ -2,12 +2,21 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process"); // Swapped exec for spawn
+const { spawn } = require("child_process");
+const cookieParser = require('cookie-parser');
+const csrf         = require('csurf');
+const helmet = require('helmet');
 
 const cloneRepo = require("./gitServices");
 const scanCodeFiles = require("./codeScanner");
 const generateDocs = require("./aiWriter");
 const analyzeRepo = require("./repoAnalyzer");
+const Razorpay = require('razorpay');
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
 require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -22,21 +31,164 @@ const supabase = createClient(
 );
 
 const askAI = require("./ai.service");
+const validator = require('validator');
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+    origin: 'http://localhost:5173', 
+    credentials: true 
+}));
 app.use(express.json());
+
+// --- SECURITY: Force HTTPS in Production ---
+app.use((req, res, next) => {
+    if (process.env.NODE_ENV === 'production' && req.headers['x-forwarded-proto'] !== 'https') {
+        return res.redirect('https://' + req.headers.host + req.url);
+    }
+    next();
+});
+
+// --- SECURITY: LAYER 2 XSS PREVENTION (CSP) ---
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:  ["'self'"],
+      scriptSrc:   ["'self'", "'unsafe-eval'"],
+      styleSrc:    ["'self'", "'unsafe-inline'"],
+      imgSrc:      ["'self'", 'data:', 'https:'],
+      connectSrc:  ["'self'", 'https://*.supabase.co', 'https://generativelanguage.googleapis.com'],
+      frameSrc:    ["'self'"]
+    },
+  },
+}));
+
+// --- SECURITY: Cookie Parser & CSRF Setup ---
+app.use(cookieParser());
+
+const csrfProtection = csrf({
+    cookie: {
+        httpOnly: true,
+        secure:   process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+    }
+});
+
+app.get('/api/csrf-token', csrfProtection, (req, res) => {
+    res.json({ csrfToken: req.csrfToken() });
+});
+
 app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();
 });
+
 app.use("/api/static", express.static(path.join(__dirname, "../dist")));
+
+// --- SECURITY: LAYER 3 XSS PREVENTION (Input Sanitization) ---
+function sanitizeString(input, maxLength = 100) {
+    if (!input || typeof input !== 'string') return '';
+    return validator.escape(input.trim()).slice(0, maxLength);
+}
+
+// --- SECURITY: RBAC MIDDLEWARE (Authentication & Roles) ---
+async function requireAuth(req, res, next) {
+    const token = req.headers['authorization']?.slice(7);
+    if (!token) return res.status(401).json({ error: 'Not authenticated' });
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+
+    req.user = user;
+    next();
+}
+
+function requireRole(...allowedRoles) {
+    return async (req, res, next) => {
+        // Find tenant and project name (handles both body and params)
+        const tenantName = req.body.tenantName || req.body.tenant || req.params.tenant;
+        const projectName = req.body.projectName || req.body.version || req.params.version;
+
+        if (!tenantName || !projectName) {
+            return res.status(400).json({ error: 'Missing project details for role check' });
+        }
+
+        const { data: project } = await supabase
+            .from('projects')
+            .select('id')
+            .eq('tenant_name', tenantName)
+            .eq('project_name', projectName)
+            .single();
+
+        if (!project) return res.status(404).json({ error: 'Project not found' });
+
+        const { data: member } = await supabase
+            .from('project_members')
+            .select('role')
+            .eq('project_id', project.id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (!member || !allowedRoles.includes(member.role)) {
+            return res.status(403).json({ error: 'Insufficient permissions' });
+        }
+
+        req.userRole = member.role;
+        next();
+    }
+}
 
 app.get("/", (req, res) => {
     res.send("Docs API is running smoothly!");
 });
 
+// --- RAZORPAY BILLING ROUTES ---
+
+app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async (req, res) => {
+  try {
+    const user = req.user;
+
+    // 1. Check if user already has an active subscription
+    const { data: userData } = await supabase
+      .from('users')
+      .select('razorpay_customer_id, plan, email, full_name')
+      .eq('id', user.id)
+      .single();
+
+    if (userData.plan === 'pro') {
+      return res.status(400).json({ error: 'Already on Pro plan' });
+    }
+
+    // 2. Create the Razorpay Subscription
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: process.env.RAZORPAY_PRO_PLAN_ID,
+      total_count: 120, // 120 months = 10 years (effectively unlimited)
+      quantity: 1,
+      customer_notify: 1, // Razorpay sends payment reminder emails automatically
+      notes: {
+        supabase_user_id: user.id,
+        user_email: userData.email,
+      },
+    });
+
+    // 3. Save the subscription ID to your Supabase database immediately
+    await supabase.from('users')
+      .update({ razorpay_subscription_id: subscription.id })
+      .eq('id', user.id);
+
+    // 4. Return the subscription ID so the frontend can open the Razorpay popup
+    res.json({
+      subscriptionId: subscription.id,
+      keyId: process.env.RAZORPAY_KEY_ID,
+    });
+
+  } catch (error) {
+    console.error('Subscription creation error:', error);
+    res.status(500).json({ error: 'Failed to create subscription' });
+  }
+});
+
+// Webhook stays public so GitHub can ping it without a login token
 app.post("/api/webhook", async (req, res) => {
     const payload = req.body;
 
@@ -140,15 +292,17 @@ app.post("/api/webhook", async (req, res) => {
     }
 });
 
-app.post("/api/github", async (req, res) => {
-    const { repoUrl, projectName, tenantName } = req.body;
+// NEW: Require Admin or Editor to generate docs from GitHub
+app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+    const repoUrl = req.body.repoUrl; 
+    const projectName = sanitizeString(req.body.projectName, 64);
+    const tenantName  = sanitizeString(req.body.tenantName, 64);
 
     if (!repoUrl || !projectName || !tenantName) {
         return res.status(400).json({ error: "Missing repoUrl, projectName, or tenantName" });
     }
 
     try {
-        // --- NEW ARCHITECTURE: Update 'projects' table directly ---
         await supabase
             .from('projects')
             .update({ status: 'running' })
@@ -203,7 +357,6 @@ app.post("/api/github", async (req, res) => {
 
         console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
         
-        // Respond IMMEDIATELY before the build script runs
         res.json({
             message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
             fileProcessed: generatedCount,
@@ -212,8 +365,6 @@ app.post("/api/github", async (req, res) => {
         });
 
         const buildScriptPath = path.join(__dirname, "../build/build.js");
-
-        // Spawn in background
         const buildProcess = spawn("node", [buildScriptPath]);
 
         buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
@@ -251,8 +402,11 @@ app.post("/api/github", async (req, res) => {
     }
 });
 
-app.post('/api/settings', async (req, res) => {
-    const { tenant, version, primaryColor, logoUrl, fontFamily, darkMode } = req.body;
+// NEW: Require Admin to save settings
+app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
+    const tenant = sanitizeString(req.body.tenant, 64);
+    const version = sanitizeString(req.body.version, 64);
+    const { primaryColor, logoUrl, fontFamily, darkMode } = req.body;
 
     const config = {
         name: version,
@@ -269,7 +423,6 @@ app.post('/api/settings', async (req, res) => {
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    // Respond immediately
     res.json({ message: 'Settings saved. Rebuilding site in background...' });
 
     const buildScriptPath = path.join(__dirname, '../build/build.js');
@@ -279,7 +432,8 @@ app.post('/api/settings', async (req, res) => {
     buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
 });
 
-app.delete('/api/projects/:tenant/:version', async (req, res) => {
+// NEW: Require Admin to delete projects
+app.delete('/api/projects/:tenant/:version', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     const { tenant, version } = req.params;
 
     const { error: supaErr } = await supabase
@@ -299,8 +453,12 @@ app.delete('/api/projects/:tenant/:version', async (req, res) => {
     res.json({ message: 'Project deleted successfully' });
 });
 
-app.post("/api/docs", (req, res) => {
-    const { tenant, version, fileName, content } = req.body;
+// NEW: Require Admin or Editor to save a doc file manually
+app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'), (req, res) => {
+    const tenant = sanitizeString(req.body.tenant, 64);
+    const version = sanitizeString(req.body.version, 64);
+    const fileName = sanitizeString(req.body.fileName, 100);
+    const content = req.body.content; 
 
     if (!tenant || !version || !fileName || !content) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -318,7 +476,6 @@ app.post("/api/docs", (req, res) => {
         fs.writeFileSync(filePath, content);
         console.log(`Saved new document: ${filePath}`);
 
-        // Respond immediately
         res.json({
             message: "Document saved! Engine is rebuilding in background.",
             tenant,
@@ -350,8 +507,6 @@ app.post("/api/docs", (req, res) => {
     }
 });
 
-// --- SAAS FEATURE: API Playground Proxy ---
-// This safely routes requests from the React frontend to bypass CORS
 app.post("/api/proxy", async (req, res) => {
     const { targetUrl, targetMethod, payload } = req.body;
 
@@ -362,27 +517,20 @@ app.post("/api/proxy", async (req, res) => {
     try {
         console.log(`\n🔌 [Proxy] Forwarding ${targetMethod} request to: ${targetUrl}`);
         
-        // Construct the fetch options
         const fetchOptions = {
             method: targetMethod,
             headers: {
                 "Content-Type": "application/json",
-                // If you add Authentication headers to your playground later, they pass through here!
             }
         };
 
-        // Only attach a body if it's not a GET or DELETE request
         if (payload && targetMethod !== "GET" && targetMethod !== "DELETE") {
             fetchOptions.body = JSON.stringify(payload);
         }
 
-        // The Node.js server makes the actual request (Bypassing CORS!)
         const externalResponse = await fetch(targetUrl, fetchOptions);
-        
-        // Parse the response from the destination server
         const data = await externalResponse.json().catch(() => ({}));
 
-        // Send the data safely back to the React frontend
         res.status(externalResponse.status).json({
             status: externalResponse.status,
             data: data
@@ -394,6 +542,34 @@ app.post("/api/proxy", async (req, res) => {
             error: "Failed to reach the target URL.", 
             details: error.message 
         });
+    }
+});
+
+app.get("/api/domain/:customDomain", async (req, res) => {
+    const { customDomain } = req.params;
+
+    try {
+        const { data, error } = await supabase
+            .from('projects')
+            .select('tenant_name, project_name')
+            .eq('custom_domain', customDomain)
+            .single();
+
+        if (error || !data) {
+            console.log(`[Domain Routing] Unrecognized domain pinged: ${customDomain}`);
+            return res.status(404).json({ error: "Domain not linked to any project." });
+        }
+
+        console.log(`[Domain Routing] Matched ${customDomain} -> ${data.tenant_name}/${data.project_name}`);
+        
+        res.json({
+            tenant: data.tenant_name,
+            version: data.project_name
+        });
+
+    } catch (error) {
+        console.error("[Domain Routing] Server Error:", error);
+        res.status(500).json({ error: "Failed to verify domain." });
     }
 });
 

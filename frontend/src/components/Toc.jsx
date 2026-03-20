@@ -20,8 +20,10 @@ export default function Toc() {
         if (!tenant || !version || !activeRoute) return;
 
         const cleanRoute = activeRoute.replace(/\//g, "_");
+
+        const API_URL = import.meta.env.VITE_API_URL;
         
-        fetch(`http://localhost:4000/api/static/toc/${tenant}_${version}_${cleanRoute}.json`)
+        fetch(`${API_URL}/api/static/toc/${tenant}_${version}_${cleanRoute}.json`)
         .then(res => {
             if (!res.ok) throw new Error("TOC not found");
             return res.json();

@@ -1,5 +1,20 @@
 import { supabase } from './auth';
 
+// Fetch the user's specific role for a given project
+export async function getUserRole(projectId) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return 'viewer'; // Default fallback
+
+    const { data } = await supabase
+        .from('project_members')
+        .select('role')
+        .eq('project_id', projectId)
+        .eq('user_id', user.id)
+        .single();
+        
+    return data?.role || 'viewer';
+}
+
 // Fetch all projects for the current logged-in user
 export async function getUserProjects() {
   const { data, error } = await supabase

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { apiFetch } from "../../lib/api";
 
 export function ApiPlayground({ method = "GET", endpoint = "/" }) {
   const [requestBody, setRequestBody] = useState("{\n  \n}");
@@ -28,9 +29,7 @@ export function ApiPlayground({ method = "GET", endpoint = "/" }) {
       if (isBodyAllowed && requestBody.trim() !== "" && requestBody.trim() !== "{\n  \n}") {
         parsedBody = JSON.parse(requestBody);
       }
-
-      // NOTE: We are calling the proxy we will build in Node.js later!
-      const res = await fetch("http://localhost:4000/api/proxy", {
+      const res = await apiFetch(`/api/proxy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

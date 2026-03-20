@@ -1,5 +1,6 @@
 import { useState} from "react";
 import ReactMarkdown from "react-markdown";
+import { apiFetch } from '../lib/api';
 
 export default function Editor() {
     const [tenant, setTenant] = useState("company-a");
@@ -12,8 +13,7 @@ export default function Editor() {
             alert ("Please provide a file name and some content");
             return;
         }
-
-        const res = await fetch("http://localhost:4000/api/docs", {
+        const res = await apiFetch(`/api/docs`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

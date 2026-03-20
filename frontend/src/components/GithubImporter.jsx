@@ -1,4 +1,5 @@
 import React, {useState} from "react";
+import { apiFetch } from '../lib/api';
 
 const GithubImporter = () => {
     const [repoUrl, setRepoUrl] = useState("");
@@ -20,7 +21,7 @@ const GithubImporter = () => {
         setStatusMessage("Downloading code and generating AI docs... Please wait.");
 
         try {
-            const response = await fetch("http://localhost:4000/api/github", {
+            const response = await apiFetch(`/api/github`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",

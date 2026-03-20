@@ -3,8 +3,11 @@ import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/auth";
 import { deleteProject } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
+import SecuritySettings from '../components/dashboard/SecuritySettings';
+import { apiFetch } from '../lib/api';
+import UpgradeButton from '../components/dashboard/UpgradeButton';
 
-// Standard preset colors [cite: 284-285]
+// Standard preset colors
 const PRESETS = ['#6366f1','#0f766e','#db2777','#d97706','#16a34a','#2563eb','#9333ea','#0f172a'];
 
 export default function ProjectSettings() {
@@ -20,7 +23,11 @@ export default function ProjectSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Danger Zone State [cite: 339-346]
+  // --- NEW: Custom Domain State ---
+  const [domainInput, setDomainInput] = useState('');
+  const [isSavingDomain, setIsSavingDomain] = useState(false);
+
+  // Danger Zone State
   const [showModal, setShowModal] = useState(false);
   const [confirmText, setConfirmText] = useState('');
 
@@ -31,17 +38,19 @@ export default function ProjectSettings() {
           setProject(data);
           setPrimaryColor(data.primary_color || '#6366f1');
           setLogoUrl(data.logo_url || '');
+          // Load existing domain if they have one
+          setDomainInput(data.custom_domain || '');
         }
         setLoading(false);
       });
   }, [id]);
 
-  // Handle Save Theme [cite: 295-309]
+  // Handle Save Theme
   const handleSave = async () => {
     setSaving(true);
     
     // 1. Call Backend to save JSON and rebuild
-    await fetch('http://localhost:4000/api/settings', {
+    await apiFetch(`/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -64,17 +73,37 @@ export default function ProjectSettings() {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  // Handle Delete Project [cite: 368-379]
+  // --- NEW: Handle Save Domain ---
+  const handleSaveDomain = async () => {
+    setIsSavingDomain(true);
+    
+    // Clean up the input (remove https://, spaces, and trailing slashes)
+    let cleanDomain = domainInput.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (cleanDomain === "") cleanDomain = null; 
+
+    const { error } = await supabase
+      .from('projects')
+      .update({ custom_domain: cleanDomain })
+      .eq('id', id);
+
+    if (error) {
+      console.error(error);
+      alert("Failed to save. That domain might already be used by someone else!");
+    } else {
+      setProject(prev => ({ ...prev, custom_domain: cleanDomain }));
+      alert("Custom domain successfully linked to this project!");
+    }
+    
+    setIsSavingDomain(false);
+  };
+
+  // Handle Delete Project
   const handleDelete = async () => {
-    // 1. Delete backend files and vectors FIRST [cite: 380]
-    await fetch(`http://localhost:4000/api/projects/${project.tenant_name}/${project.project_name}`, {
+    await apiFetch(`/api/projects/${project.tenant_name}/${project.project_name}`, {
       method: 'DELETE'
     });
 
-    // 2. Delete Supabase row
     await deleteProject(project.id);
-    
-    // 3. Redirect to dashboard
     navigate('/dashboard', { replace: true });
   };
 
@@ -137,12 +166,61 @@ export default function ProjectSettings() {
               </button>
             </div>
 
-            {/* Danger Zone Panel [cite: 310-316] */}
+            {/* --- NEW: Custom Domain Panel --- */}
+            <div style={{ backgroundColor: "var(--bg-main)", padding: "32px", borderRadius: "12px", border: "1px solid var(--border-color)", marginBottom: "32px" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: "600", marginBottom: "8px" }}>Custom Domain</h2>
+              <p style={{ fontSize: "14px", color: "var(--text-muted)", marginBottom: "24px" }}>
+                Host your documentation on your own URL. Point a CNAME record to <strong>cname.prismify.dev</strong>.
+              </p>
+              
+              <div style={{ marginBottom: "24px" }}>
+                <label style={{ display: "block", fontSize: "14px", fontWeight: "500", marginBottom: "8px" }}>Domain URL</label>
+                <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--border-color)", borderRadius: "8px", overflow: "hidden" }}>
+                  <span style={{ padding: "10px 12px", backgroundColor: "#f8fafc", color: "var(--text-muted)", fontSize: "14px", borderRight: "1px solid var(--border-color)" }}>https://</span>
+                  <input 
+                    type="text" 
+                    value={domainInput} 
+                    onChange={(e) => setDomainInput(e.target.value)}
+                    placeholder="docs.yourstartup.com"
+                    style={{ flex: 1, padding: "10px 12px", border: "none", outline: "none", fontSize: "14px", color: "var(--text-heading)", backgroundColor: "var(--bg-main)" }}
+                  />
+                </div>
+              </div>
+
+              <button 
+                onClick={handleSaveDomain} 
+                disabled={isSavingDomain || domainInput === (project?.custom_domain || "")}
+                style={{ 
+                  padding: "10px 20px", backgroundColor: "var(--text-heading)", color: "var(--bg-main)", 
+                  border: "none", borderRadius: "8px", fontWeight: "500", 
+                  cursor: (isSavingDomain || domainInput === (project?.custom_domain || "")) ? "not-allowed" : "pointer", 
+                  opacity: (isSavingDomain || domainInput === (project?.custom_domain || "")) ? 0.7 : 1 
+                }}
+              >
+                {isSavingDomain ? "Saving..." : "Save Domain"}
+              </button>
+            </div>
+
+            {/* --- NEW: Security Settings Panel (2FA) --- */}
+            <div style={{ marginBottom: "32px" }}>
+              <SecuritySettings />
+            </div>
+
+            {/* --- NEW: Billing Panel --- */}
+<div style={{ backgroundColor: "var(--bg-main)", padding: "32px", borderRadius: "12px", border: "1px solid var(--border-color)", marginBottom: "32px" }}>
+  <h2 style={{ fontSize: "18px", fontWeight: "600", marginBottom: "8px" }}>Plan & Billing</h2>
+  <p style={{ fontSize: "14px", color: "var(--text-muted)", marginBottom: "24px" }}>
+    You are currently on the Free plan. Upgrade to unlock unlimited AI generations and custom domains.
+  </p>
+  <UpgradeButton />
+</div>
+
+            {/* Danger Zone Panel */}
             <div style={{ padding: "32px", borderRadius: "12px", border: "1px solid #fecaca", backgroundColor: "#fef2f2" }}>
               <h2 style={{ fontSize: "18px", fontWeight: "600", color: "#dc2626", marginBottom: "8px" }}>Danger Zone</h2>
               <p style={{ fontSize: "14px", color: "#991b1b", marginBottom: "24px" }}>These actions cannot be undone.</p>
               
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: "24px", borderBottom: "1px solid #fecaca", marginBottom: "24px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <h3 style={{ fontSize: "15px", fontWeight: "600", color: "#991b1b", margin: 0 }}>Delete Project</h3>
                   <p style={{ fontSize: "13px", color: "#b91c1c", margin: "4px 0 0 0" }}>Permanently remove this project and all documentation.</p>
@@ -179,7 +257,7 @@ export default function ProjectSettings() {
         </div>
       </div>
 
-      {/* Delete Confirmation Modal [cite: 336-346] */}
+      {/* Delete Confirmation Modal */}
       {showModal && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
           <div style={{ backgroundColor: "var(--bg-main)", padding: "32px", borderRadius: "12px", width: "100%", maxWidth: "400px" }}>

@@ -1,26 +1,33 @@
 import { useState } from "react";
+import { useParams } from "react-router-dom"; 
+import { apiFetch } from '../lib/api';
 
-export default function AiChat() {
+// --- NEW: Accept the custom props from DocEngine! ---
+export default function AiChat({ customTenant, customVersion }) {
+    const params = useParams();
+    
+    // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
+    const tenant = customTenant || params.tenant;
+    const version = customVersion || params.version;
+
     const [question, setQuestion] = useState("");
     const [answer, setAnswer] = useState("");
     const [isLoading, setIsLoading] = useState(false);
 
-    const tenant ="company-a";
-    const version = "v1";
-
     async function askAI() {
-        if (!question) return;
+        // Safety check: Don't search if we don't know the tenant/version
+        if (!question || !tenant || !version) return;
 
         setIsLoading(true);
         setAnswer("");
 
         try {
-            const res = await fetch("http://localhost:4000/api/ask", {
+            const res = await apiFetch(`/api/ask`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
                 },
-
+                // Now dynamically passing the correct tenant and version!
                 body: JSON.stringify({ question, tenant, version })
             });
 

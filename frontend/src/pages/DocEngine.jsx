@@ -7,8 +7,13 @@ import DocPage from "./DocPage";
 import Toc from "../components/Toc";
 import AiChat from "../components/AiChat";
 
-export default function DocEngine() { 
-  const { tenant, version } = useParams();
+// --- NEW: Accept the custom props from App.jsx! ---
+export default function DocEngine({ customTenant, customVersion }) { 
+  const params = useParams();
+  
+  // THE MAGIC TRICK: Use the prop if it exists (Custom Domain), otherwise use the URL (Dashboard Preview)
+  const tenant = customTenant || params.tenant;
+  const version = customVersion || params.version;
   
   // Detect if we are inside the Dashboard's iframe preview
   const [isPreview, setIsPreview] = useState(false);
@@ -106,17 +111,19 @@ export default function DocEngine() {
           backgroundColor: "#ffffff",
           flexShrink: 0
         }}>
-          <Sidebar />
+          {/* Passed the props down! */}
+          <Sidebar customTenant={tenant} customVersion={version} />
         </div>
         
         {/* 2. Center Content (The actual Docs) */}
         <div style={{ flex: 1, overflowY: "auto", backgroundColor: "#ffffff" }}>
           <div style={{ 
-            maxWidth: "800px", // This matches Mintlify's readable text width!
+            maxWidth: "800px", 
             margin: "0 auto", 
             padding: "48px 32px" 
           }}>
-            <DocPage />
+            {/* Passed the props down! */}
+            <DocPage customTenant={tenant} customVersion={version} />
           </div>
         </div>
         
@@ -132,7 +139,7 @@ export default function DocEngine() {
             <div style={{ position: "sticky", top: 0 }}>
               <Toc />
               <div style={{ marginTop: "40px" }}>
-                <AiChat />
+                <AiChat customTenant={tenant} customVersion={version} />
               </div>
             </div>
           </div>
