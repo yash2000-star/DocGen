@@ -6,6 +6,7 @@ import { Accordion, AccordionGroup } from "./Accordion";
 import { Expandable } from "./Expandable";
 import { CodeGroup } from "./CodeGroup";
 import { ApiPlayground } from "./ApiPlayground";
+import { CodeGenerator } from "./CodeGenerator";
 
 export const Note = ({ children }) => {
     return (
@@ -419,4 +420,4 @@ export const ResponseExample = ({ children }) => {
   );
 };
 
-export { CodeBlock, Tabs, Tab, Card, CardGroup, Accordion, AccordionGroup, Expandable, CodeGroup, ApiPlayground };
+export { CodeBlock, Tabs, Tab, Card, CardGroup, Accordion, AccordionGroup, Expandable, CodeGroup, ApiPlayground, CodeGenerator };

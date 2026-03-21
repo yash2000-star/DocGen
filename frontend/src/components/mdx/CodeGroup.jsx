@@ -15,6 +15,12 @@ export function CodeGroup({ children }) {
       backgroundColor: "#0f172a", // Dark terminal background
       boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)"
     }}>
+      {/* --- INJECTED CSS FIX --- */}
+      <style>{`
+        .code-group-wrapper > div { margin: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; }
+        .code-group-wrapper > div > div:first-child { display: none !important; }
+      `}</style>
+
       {/* Dark Mode Tab Headers */}
       <div style={{ 
         display: "flex", 
@@ -35,12 +41,13 @@ export function CodeGroup({ children }) {
                 cursor: "pointer",
                 backgroundColor: activeTab === index ? "#0f172a" : "transparent",
                 border: "none",
-                borderTop: activeTab === index ? "2px solid #3b82f6" : "2px solid transparent",
+                borderTop: activeTab === index ? "2px solid #38bdf8" : "2px solid transparent",
                 color: activeTab === index ? "#e2e8f0" : "#64748b",
                 fontWeight: "600",
                 fontSize: "12px",
                 fontFamily: "monospace",
-                transition: "all 0.2s ease"
+                transition: "all 0.2s ease",
+                whiteSpace: "nowrap"
               }}
             >
               {title}
@@ -50,9 +57,7 @@ export function CodeGroup({ children }) {
       </div>
       
       {/* The Active CodeBlock */}
-      <div style={{ 
-        "& > div > div:first-child": { display: "none" } 
-      }}>
+      <div className="code-group-wrapper">
         {tabs[activeTab]}
       </div>
     </div>

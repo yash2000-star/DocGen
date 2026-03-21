@@ -10,6 +10,16 @@ import Dashboard from "./pages/Dashboard";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectOverview from "./pages/ProjectOverview";
 import ProjectSettings from "./pages/ProjectSettings";
+import Editor from "./pages/Editor";
+import NavigationEditor from "./pages/NavigationEditor";
+import Analytics from "./pages/Analytics";
+
+// --- NEW IMPORTS: Product-Led Growth Routes ---
+import QuickRouter from "./pages/QuickRouter";
+import Explore from "./pages/Explore";
+
+// --- NEW IMPORT: The master layout for project pages ---
+import DashboardLayout from "./components/layout/DashboardLayout"; 
 
 function PublicRoute({ children }) {
   const { user } = useAuth();
@@ -17,7 +27,6 @@ function PublicRoute({ children }) {
   return children;
 }
 
-// --- NEW: Global Auth Listener Component ---
 function AuthListener() {
   const navigate = useNavigate();
 
@@ -107,11 +116,36 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+          
+          {/* General Dashboard routes (no sidebar yet) */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/dashboard/new" element={<ProtectedRoute><NewProject /></ProtectedRoute>} />
-          <Route path="/dashboard/:id" element={<ProtectedRoute><ProjectOverview /></ProtectedRoute>} />
-          <Route path="/dashboard/:id/settings" element={<ProtectedRoute><ProjectSettings /></ProtectedRoute>} />
+          
+          {/* --- NEW: Nested Routing using DashboardLayout --- */}
+          <Route path="/dashboard/:id" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
+            
+            {/* 'index' means this loads when the URL is exactly /dashboard/:id */}
+            <Route index element={<ProjectOverview />} />
+            
+            {/* This loads when the URL is /dashboard/:id/settings */}
+            <Route path="settings" element={<ProjectSettings />} />
+
+            <Route path="editor" element={<Editor />} />
+
+            <Route path="navigation" element={<NavigationEditor />} />
+
+            <Route path="analytics" element={<Analytics />} />
+            
+          </Route>
+
           <Route path="/docs/:tenant/:version" element={<ProtectedRoute><DocEngine /></ProtectedRoute>} />
+          
+          {/* --- NEW: The PLG Explore Route --- */}
+          <Route path="/explore/:tenant/:version" element={<Explore />} />
+
+          {/* --- NEW: The Magic URL Swap Route --- */}
+          <Route path="/:tenant/:version" element={<QuickRouter />} />
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>

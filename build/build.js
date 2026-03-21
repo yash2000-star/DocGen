@@ -213,8 +213,8 @@ async function build() {
   }
 
   const args = process.argv.slice(2);
-  const targetRoute = args.length > 0 && args[0] !== '--webhook' ? args[0] : null;
-  const isWebhook = args.includes('--webhook');
+  // Collect all arguments EXCEPT '--webhook' to get an array of specific files
+  const targetRoutes = args.filter(arg => arg !== '--webhook');
 
   const scannedDocs = scanDocs(DOCS_PATH);
   const docs = [];
@@ -241,7 +241,8 @@ async function build() {
     const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
     searchIndex.push(...sections);
 
-    const shouldGenerateVectors = !targetRoute || doc.route === targetRoute || isWebhook;
+    // If the array is empty, build everything. If it has files, ONLY build those files!
+  const shouldGenerateVectors = targetRoutes.length === 0 || targetRoutes.includes(doc.route);
 
     // Chunking Engine
     if (shouldGenerateVectors) {
@@ -331,29 +332,44 @@ async function build() {
         route: doc.route.replace(`${tenant}/${version}/`, ""),
       }));
 
-      const sidebar = generateSidebarTree(cleanDocs);
-
       const targetDir = path.join(DIST_PATH, tenant, version);
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
+
+     // --- UPDATED: Smart Config Resolver ---
+      let sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docgen.json");
+      let destConfigPath = path.join(targetDir, "mint.json"); // Always output as mint.json for the frontend
+
+      // Fallback to mint.json if docgen.json doesn't exist (e.g., imported from GitHub)
+      if (!fs.existsSync(sourceConfigPath)) {
+        sourceConfigPath = path.join(DOCS_PATH, tenant, version, "mint.json");
+      }
+
+      let siteConfig = { colors: { primary: "#3b82f6" } }; // Default fallback
+
+      if (fs.existsSync(sourceConfigPath)) {
+        try {
+            const rawConfig = fs.readFileSync(sourceConfigPath, 'utf8');
+            siteConfig = JSON.parse(rawConfig);
+            fs.copyFileSync(sourceConfigPath, destConfigPath);
+            console.log(`[Config] Loaded settings for ${tenant}/${version}`);
+        } catch (e) {
+            console.error(`[Config] Error parsing config for ${tenant}/${version}:`, e);
+            fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
+        }
+      } else {
+        fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
+      }
+
+      // --- UPDATED: Pass config to Sidebar Generator ---
+      const sidebar = generateSidebarTree(cleanDocs, siteConfig);
 
       // Save Sidebar
       fs.writeFileSync(
         path.join(targetDir, "sidebar.json"),
         JSON.stringify(sidebar, null, 2),
       );
-
-      const sourceConfigPath = path.join(DOCS_PATH, tenant, version, "mint.json");
-      const destConfigPath = path.join(targetDir, "mint.json");
-
-      if (fs.existsSync(sourceConfigPath)) {
-        fs.copyFileSync(sourceConfigPath, destConfigPath);
-        console.log(`Copied mint.json for ${tenant}/${version}`);
-      } else {
-        const defaultConfig = { colors: {primary: "#3b82f6"} };
-        fs.writeFileSync(destConfigPath, JSON.stringify(defaultConfig, null, 2));
-      }
 
       const localSearchIndex = searchIndex
         .filter((item) => item.tenant === tenant && item.version === version)
@@ -385,7 +401,8 @@ async function build() {
   console.log("Build completed successfully.");
 }
 
-function generateSidebarTree(docs) {
+// --- UPDATED: Dynamic Sidebar Generator ---
+function generateSidebarTree(docs, config) {
   const tree = [];
   
   // Group all documents by their AI-assigned frontmatter group
@@ -396,18 +413,21 @@ function generateSidebarTree(docs) {
     return acc;
   }, {});
 
-  // Define the exact order the categories should appear in the sidebar
-  const categoryOrder = [
-    "Getting Started",
-    "Core Architecture",
-    "API Reference",
-    "Models & Data",
-    "Components",
-    "Utilities & Helpers",
-    "Miscellaneous"
-  ];
+  // Dynamically get all the groups that were actually found in the documents
+  let categoryOrder = Object.keys(groupedDocs);
 
-  // Build the Mintlify-style array based on the ordered categories
+  // Future-proofing: If the user defines a custom navigation order in their dashboard/config, use it!
+  if (config && config.navigation && Array.isArray(config.navigation)) {
+    // Only use config categories if they actually match our data structure for now
+    const configCategories = config.navigation.map(nav => typeof nav === 'string' ? nav : nav.group);
+    if (configCategories.length > 0) {
+        // Merge them: Put configured categories first, then append any unconfigured ones
+        const unconfigured = categoryOrder.filter(c => !configCategories.includes(c));
+        categoryOrder = [...configCategories, ...unconfigured];
+    }
+  }
+
+  // Build the Mintlify-style array based on the dynamic categories
   categoryOrder.forEach(category => {
     if (groupedDocs[category] && groupedDocs[category].length > 0) {
       tree.push({

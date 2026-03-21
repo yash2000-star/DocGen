@@ -3,10 +3,9 @@ import { useParams, Link } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { supabase } from "../lib/auth";
 import { updateProjectStatus } from "../lib/projects";
-import Navbar from "../components/dashboard/Navbar";
 import { getGreeting } from "../lib/utils";
-import DashboardSidebar from "../components/dashboard/DashboardSidebar";
 import { getUserRole } from '../lib/projects';
+import { apiFetch } from '../lib/api';
 
 const statusColors = {
   live:       { bg: '#ecfdf5', color: '#059669', label: 'Live' },
@@ -50,7 +49,6 @@ function PreviewUnavailable({ status }) {
   );
 }
 
-// --- NEW: Added userRole to props ---
 function ActionButtons({ project, onRebuild, userRole }) {
   const [copied, setCopied] = useState(false);
   const deployUrl = `https://${project.project_name}.docgen.app`; 
@@ -73,7 +71,6 @@ function ActionButtons({ project, onRebuild, userRole }) {
         )}
       </button>
       
-      {/* --- NEW: Hide Rebuild button from Viewers --- */}
       {['admin', 'editor'].includes(userRole) && (
         <button onClick={onRebuild} disabled={project.status === 'building'} style={{...btnStyle, opacity: project.status === 'building' ? 0.5 : 1}} title="Rebuild docs">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: project.status === 'building' ? 'spin 1s linear infinite' : 'none' }}><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>
@@ -157,7 +154,6 @@ export default function ProjectOverview() {
   const [events, setEvents] = useState([]); 
   const [loading, setLoading] = useState(true);
   const [userName, setUserName] = useState("");
-  // --- NEW: Add state for the user's role ---
   const [userRole, setUserRole] = useState("viewer");
 
   useEffect(() => {
@@ -169,7 +165,6 @@ export default function ProjectOverview() {
       const { data: projectData } = await supabase.from('projects').select('*').eq('id', id).single();
       setProject(projectData);
 
-      // --- NEW: Fetch the role alongside the project data ---
       const role = await getUserRole(id);
       setUserRole(role);
 
@@ -210,9 +205,7 @@ export default function ProjectOverview() {
     };
     setEvents(prev => [optimisticEvent, ...prev]);
 
-    const API_URL = import.meta.env.VITE_API_URL;
-    
-    fetch(`${API_URL}/api/github`, {
+    apiFetch(`/api/github`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoUrl: project.repo_url, projectName: project.project_name, tenantName: project.tenant_name })
@@ -221,9 +214,8 @@ export default function ProjectOverview() {
 
   if (loading || !project) {
     return (
-      <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)" }}>
-        <Navbar />
-        <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)" }}>{loading ? "Loading project details..." : "Project not found."}</div>
+      <div style={{ padding: "40px", textAlign: "center", color: "var(--text-muted)", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+        {loading ? "Loading project details..." : "Project not found."}
       </div>
     );
   }
@@ -232,117 +224,109 @@ export default function ProjectOverview() {
   const displayUrl = project.custom_domain ? `https://${project.custom_domain}` : `https://${project.project_name}.docgen.app`;
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)", fontFamily: "system-ui, -apple-system, sans-serif", paddingBottom: "60px" }}>
-      <Navbar />
-      
-      <div style={{ display: "flex", width: "100%" }}>
-        <DashboardSidebar />
+    <div style={{ paddingBottom: "60px", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "40px 32px" }}>
         
-        <div style={{ flex: 1, maxWidth: "1200px", margin: "0 auto", padding: "40px 32px" }}>
+        <div style={{ marginBottom: "40px" }}>
+          <h1 style={{ fontSize: "28px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>
+            {getGreeting(userName)}
+          </h1>
+          <p style={{ fontSize: "15px", color: "var(--text-muted)", margin: 0 }}>
+            Welcome back to your docs dashboard
+          </p>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "32px", marginBottom: "40px" }}>
           
-          <div style={{ marginBottom: "40px" }}>
-            <h1 style={{ fontSize: "28px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>
-              {getGreeting(userName)}
-            </h1>
-            <p style={{ fontSize: "15px", color: "var(--text-muted)", margin: 0 }}>
-              Welcome back to your docs dashboard
-            </p>
+          <div style={{ border: '1px solid var(--border-color)', borderRadius: '12px', overflow: 'hidden', minHeight: '400px', backgroundColor: "var(--bg-main)", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            {project.status === 'successful' ? (
+              <iframe
+                src={`http://localhost:5173/docs/${project.tenant_name}/${project.project_name}`}
+                style={{ width: '100%', height: '100%', minHeight: '400px', border: 'none' }}
+                title='Docs preview'
+              />
+            ) : (
+              <PreviewUnavailable status={project.status} />
+            )}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "32px", marginBottom: "40px" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", margin: 0 }}>{project.project_name}</h2>
+              <span style={{ backgroundColor: status.bg, color: status.color, padding: "2px 8px", borderRadius: "99px", fontSize: "11px", fontWeight: "600" }}>
+                {status.label}
+              </span>
+            </div>
             
-            <div style={{ border: '1px solid var(--border-color)', borderRadius: '12px', overflow: 'hidden', minHeight: '400px', backgroundColor: "var(--bg-main)", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-              {project.status === 'successful' ? (
-                <iframe
-                  src={`http://localhost:5173/docs/${project.tenant_name}/${project.project_name}`}
-                  style={{ width: '100%', height: '100%', minHeight: '400px', border: 'none' }}
-                  title='Docs preview'
-                />
-              ) : (
-                <PreviewUnavailable status={project.status} />
+            <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: 0 }}>
+              Last updated {formatDistanceToNow(new Date(project.updated_at))} ago
+            </p>
+
+            <ActionButtons project={project} onRebuild={handleRegenerate} userRole={userRole} />
+
+            <div style={{ height: "1px", backgroundColor: "var(--border-color)", margin: "24px 0" }}></div>
+
+            <div style={{ marginBottom: "24px" }}>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px", fontWeight: "500" }}>Domain</p>
+              
+              <a href={displayUrl} target="_blank" rel="noreferrer" style={{ fontSize: "14px", color: "var(--text-heading)", fontWeight: "500", textDecoration: "none", display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+                {displayUrl}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17l9.2-9.2M17 17V7H7"/></svg>
+              </a>
+
+              {userRole === 'admin' && (
+                <Link to={`/dashboard/${project.id}/settings`} style={{ fontSize: "13px", color: "#10b981", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "6px", fontWeight: "500" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ strokeDasharray: "2 2" }}>
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="16"></line>
+                    <line x1="8" y1="12" x2="16" y2="12"></line>
+                  </svg>
+                  Add custom domain
+                </Link>
               )}
             </div>
 
             <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
-                <h2 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", margin: 0 }}>{project.project_name}</h2>
-                <span style={{ backgroundColor: status.bg, color: status.color, padding: "2px 8px", borderRadius: "99px", fontSize: "11px", fontWeight: "600" }}>
-                  {status.label}
-                </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+                <span style={{ fontSize: "14px", color: "var(--text-heading)", fontWeight: "500" }}>{project.tenant_name} / {project.project_name}</span>
               </div>
-              
-              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: 0 }}>
-                Last updated {formatDistanceToNow(new Date(project.updated_at))} ago
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 0 20px" }}>
+                branch <strong style={{ color: "var(--text-heading)" }}>main</strong>
               </p>
-
-              {/* --- NEW: Pass userRole into the ActionButtons --- */}
-              <ActionButtons project={project} onRebuild={handleRegenerate} userRole={userRole} />
-
-              <div style={{ height: "1px", backgroundColor: "var(--border-color)", margin: "24px 0" }}></div>
-
-              <div style={{ marginBottom: "24px" }}>
-                <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "4px", fontWeight: "500" }}>Domain</p>
-                
-                <a href={displayUrl} target="_blank" rel="noreferrer" style={{ fontSize: "14px", color: "var(--text-heading)", fontWeight: "500", textDecoration: "none", display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
-                  {displayUrl}
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 17l9.2-9.2M17 17V7H7"/></svg>
-                </a>
-
-                {/* --- NEW: Hide Custom Domain link from Viewers and Editors --- */}
-                {userRole === 'admin' && (
-                  <Link to={`/dashboard/${project.id}/settings`} style={{ fontSize: "13px", color: "#10b981", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "6px", fontWeight: "500" }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ strokeDasharray: "2 2" }}>
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <line x1="12" y1="8" x2="12" y2="16"></line>
-                      <line x1="8" y1="12" x2="16" y2="12"></line>
-                    </svg>
-                    Add custom domain
-                  </Link>
-                )}
-              </div>
-
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
-                  <span style={{ fontSize: "14px", color: "var(--text-heading)", fontWeight: "500" }}>{project.tenant_name} / {project.project_name}</span>
-                </div>
-                <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 0 20px" }}>
-                  branch <strong style={{ color: "var(--text-heading)" }}>main</strong>
-                </p>
-              </div>
-
             </div>
+
           </div>
-
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "16px" }}>
-              <div>
-                <h2 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 4px 0" }}>Activity</h2>
-                <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>Recent changes made to your docs</p>
-              </div>
-            </div>
-            
-            <div style={{ backgroundColor: "var(--bg-main)", borderRadius: "12px", border: "1px solid var(--border-color)", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 100px 32px", padding: "12px 16px", backgroundColor: "#f8fafc", borderBottom: "1px solid var(--border-color)", fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                <span>Activity</span>
-                <span>Status</span>
-                <span>Changes</span>
-                <span></span>
-              </div>
-
-              {events.length === 0 ? (
-                <div style={{ padding: "32px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>No activity recorded yet. Rebuild the project to generate events.</div>
-              ) : (
-                <div>
-                  {events.map((event) => (
-                    <ActivityRow key={event.id} event={event} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
         </div>
+
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "16px" }}>
+            <div>
+              <h2 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 4px 0" }}>Activity</h2>
+              <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>Recent changes made to your docs</p>
+            </div>
+          </div>
+          
+          <div style={{ backgroundColor: "var(--bg-main)", borderRadius: "12px", border: "1px solid var(--border-color)", overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 140px 100px 32px", padding: "12px 16px", backgroundColor: "#f8fafc", borderBottom: "1px solid var(--border-color)", fontSize: "11px", fontWeight: "600", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              <span>Activity</span>
+              <span>Status</span>
+              <span>Changes</span>
+              <span></span>
+            </div>
+
+            {events.length === 0 ? (
+              <div style={{ padding: "32px", textAlign: "center", color: "var(--text-muted)", fontSize: "14px" }}>No activity recorded yet. Rebuild the project to generate events.</div>
+            ) : (
+              <div>
+                {events.map((event) => (
+                  <ActivityRow key={event.id} event={event} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
       </div>
     </div>
   );

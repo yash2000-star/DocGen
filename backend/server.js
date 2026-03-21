@@ -6,7 +6,7 @@ const { spawn } = require("child_process");
 const cookieParser = require('cookie-parser');
 const csrf         = require('csurf');
 const helmet = require('helmet');
-
+const crypto = require('crypto');
 const cloneRepo = require("./gitServices");
 const scanCodeFiles = require("./codeScanner");
 const generateDocs = require("./aiWriter");
@@ -39,7 +39,102 @@ app.use(cors({
     origin: 'http://localhost:5173', 
     credentials: true 
 }));
-app.use(express.json());
+
+// --- WEBHOOK RAW BODY EXCEPTION ---
+app.use((req, res, next) => {
+  if (req.path === '/api/billing/webhook') {
+    // Keep raw body for Razorpay signature verification
+    express.raw({ type: 'application/json' })(req, res, next);
+  } else {
+    // For all other routes, parse JSON normally
+    express.json()(req, res, next);
+  }
+});
+
+// --- RAZORPAY WEBHOOK HANDLER ---
+app.post('/api/billing/webhook', async (req, res) => {
+    try {
+        // 1. Verify the signature to ensure it actually came from Razorpay
+        const webhookSignature = req.headers['x-razorpay-signature'];
+        const webhookSecret    = process.env.RAZORPAY_WEBHOOK_SECRET;
+
+        const expectedSignature = crypto
+            .createHmac('sha256', webhookSecret)
+            .update(req.body) // This works because of the raw body exception we added!
+            .digest('hex');
+
+        if (webhookSignature !== expectedSignature) {
+            console.error('Invalid Razorpay webhook signature');
+            return res.status(400).json({ error: 'Invalid signature' });
+        }
+
+        // 2. Parse the verified event
+        const event = JSON.parse(req.body);
+        const entity = event.payload?.subscription?.entity;
+
+        // Helper function to find which user this payment belongs to
+        const getUserBySubId = async (subscriptionId) => {
+            const { data } = await supabase
+                .from('users')
+                .select('id')
+                .eq('razorpay_subscription_id', subscriptionId)
+                .single();
+            return data?.id;
+        };
+
+        const userId = await getUserBySubId(entity?.id);
+        if (!userId) return res.status(200).json({ received: true });
+
+        // 3. Handle the specific billing events
+        switch (event.event) {
+            case 'subscription.activated':
+            case 'subscription.charged': {
+                // Payment succeeded! Upgrade them to Pro.
+                await supabase.from('users').update({
+                    plan: 'pro',
+                    plan_status: 'active',
+                    plan_current_end: new Date(entity.current_end * 1000).toISOString(),
+                }).eq('id', userId);
+                console.log(`User ${userId} upgraded/renewed to Pro!`);
+                break;
+            }
+            case 'subscription.cancelled': {
+                // User cancelled, but keep Pro active until the end of the month
+                await supabase.from('users').update({
+                    plan_status: 'cancelled',
+                }).eq('id', userId);
+                console.log(`User ${userId} cancelled subscription.`);
+                break;
+            }
+            case 'subscription.completed': {
+                // The billing period ended after they cancelled. Downgrade to Free.
+                await supabase.from('users').update({
+                    plan: 'free',
+                    plan_status: 'active',
+                    razorpay_subscription_id: null,
+                    plan_current_end: null,
+                }).eq('id', userId);
+                console.log(`User ${userId} downgraded to free.`);
+                break;
+            }
+            case 'subscription.halted': {
+                // Payment failed multiple times. Lock the account.
+                await supabase.from('users').update({
+                    plan_status: 'halted',
+                }).eq('id', userId);
+                console.log(`Subscription halted for user ${userId} due to payment failure.`);
+                break;
+            }
+        }
+
+        // Always respond 200 OK so Razorpay knows we got the message
+        res.status(200).json({ received: true });
+
+    } catch (error) {
+        console.error('Webhook processing error:', error);
+        res.status(500).json({ error: 'Webhook handler failed' });
+    }
+});
 
 // --- SECURITY: Force HTTPS in Production ---
 app.use((req, res, next) => {
@@ -70,7 +165,7 @@ const csrfProtection = csrf({
     cookie: {
         httpOnly: true,
         secure:   process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax',
     }
 });
 
@@ -136,6 +231,75 @@ function requireRole(...allowedRoles) {
         req.userRole = member.role;
         next();
     }
+}
+
+// --- PLAN LIMITS & USAGE MIDDLEWARE ---
+const PLAN_LIMITS = {
+  free: {
+    maxProjects:     3,
+    maxGenerations:  20,
+    maxTeamMembers:  1,
+    maxAiQueries:    10,
+  },
+  pro: {
+    maxProjects:     Infinity,
+    maxGenerations:  Infinity,
+    maxTeamMembers:  5,
+    maxAiQueries:    Infinity,
+  },
+  enterprise: {
+    maxProjects:     Infinity,
+    maxGenerations:  Infinity,
+    maxTeamMembers:  Infinity,
+    maxAiQueries:    Infinity,
+  },
+};
+
+async function checkGenerationLimit(req, res, next) {
+  const { data: user } = await supabase
+    .from('users').select('plan, plan_status').eq('id', req.user.id).single();
+
+  // If a Pro user's payment fails (halted), we treat them as a Free user
+  const plan   = user.plan_status === 'active' ? user.plan : 'free';
+  const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+  const month  = new Date().toISOString().slice(0, 7); // Gets 'YYYY-MM'
+
+  const { data: usage } = await supabase
+    .from('usage_tracking').select('generations')
+    .eq('user_id', req.user.id).eq('month', month).single();
+
+  if ((usage?.generations || 0) >= limits.maxGenerations) {
+    return res.status(403).json({
+      error:           'Generation limit reached. Please upgrade to Pro.',
+      used:            usage?.generations || 0,
+      limit:           limits.maxGenerations,
+      upgradeRequired: plan === 'free',
+    });
+  }
+  
+  req.userPlan = plan;
+  next();
+}
+
+async function checkProjectLimit(req, res, next) {
+  const { data: user } = await supabase
+    .from('users').select('plan').eq('id', req.user.id).single();
+  const limits = PLAN_LIMITS[user?.plan || 'free'];
+
+  if (limits.maxProjects === Infinity) return next();
+
+  const { count } = await supabase.from('projects')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', req.user.id);
+
+  if (count >= limits.maxProjects) {
+    return res.status(403).json({
+      error:           'Project limit reached. Please upgrade to Pro.',
+      limit:           limits.maxProjects,
+      upgradeRequired: true,
+    });
+  }
+  next();
 }
 
 app.get("/", (req, res) => {
@@ -213,7 +377,7 @@ app.post("/api/webhook", async (req, res) => {
 
     changedFiles = [...new Set(changedFiles)];
 
-    const vaildExtensions = [".js", ".ts", ".py", "go"];
+    const vaildExtensions = [".js", ".ts", ".py", ".go"];
     const filesToProcess = changedFiles.filter(file => {
         const ext = path.extname(file);
         return vaildExtensions.includes(ext);
@@ -235,6 +399,7 @@ app.post("/api/webhook", async (req, res) => {
         }
 
         let generatedCount = 0;
+        let updatedRoutes = []; // <-- NEW: Array to hold the changed files
 
         for (const relativeFilePath of filesToProcess) {
             const fullPath = path.join(downloadedFolderPath, relativeFilePath);
@@ -255,10 +420,14 @@ app.post("/api/webhook", async (req, res) => {
                    }
 
                    const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
+                   fs.writeFileSync(mdFilePath, markdownOutput);
 
-                    fs.writeFileSync(mdFilePath, markdownOutput);
-                    console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
-                    generatedCount++;
+                   // --- NEW: Format the exact route build.js expects ---
+                   const routeString = `${tenantName}/${projectName}/${parsedPath.dir ? parsedPath.dir + '/' : ''}${parsedPath.name}`.replace(/\\/g, "/");
+                   updatedRoutes.push(routeString);
+
+                   console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
+                   generatedCount++;
                 }
             }
         }
@@ -270,9 +439,8 @@ app.post("/api/webhook", async (req, res) => {
 
         const buildScriptPath = path.join(__dirname, "../build/build.js");
 
-        // Spawn process in background and stream logs
-        const buildProcess = spawn("node", [buildScriptPath, "--webhook"]);
-
+        // --- UPDATED: Pass the array of changed routes to the worker! ---
+        const buildProcess = spawn("node", [buildScriptPath, "--webhook", ...updatedRoutes]);
         buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
         buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
 
@@ -293,7 +461,7 @@ app.post("/api/webhook", async (req, res) => {
 });
 
 // NEW: Require Admin or Editor to generate docs from GitHub
-app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'editor'), checkProjectLimit, checkGenerationLimit, async (req, res) => {
     const repoUrl = req.body.repoUrl; 
     const projectName = sanitizeString(req.body.projectName, 64);
     const tenantName  = sanitizeString(req.body.tenantName, 64);
@@ -356,6 +524,13 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         }
 
         console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
+
+        // Increment Generation Count
+        await supabase.rpc('increment_usage', {
+            p_user_id: req.user.id,
+            p_month: new Date().toISOString().slice(0, 7),
+            p_field: 'generations'
+        });
         
         res.json({
             message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
@@ -403,16 +578,13 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
 });
 
 // NEW: Require Admin to save settings
+// NEW: Require Admin to save settings & navigation
 app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     const tenant = sanitizeString(req.body.tenant, 64);
     const version = sanitizeString(req.body.version, 64);
-    const { primaryColor, logoUrl, fontFamily, darkMode } = req.body;
-
-    const config = {
-        name: version,
-        theme: { primaryColor, logoUrl, fontFamily, darkMode },
-        updatedAt: new Date().toISOString()
-    };
+    
+    // We now accept 'navigation' from the frontend!
+    const { primaryColor, logoUrl, fontFamily, darkMode, navigation } = req.body;
 
     const configPath = path.join(__dirname, '../docs', tenant, version, 'docgen.json');
     const configDir  = path.dirname(configPath);
@@ -421,10 +593,33 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
         return res.status(404).json({ error: 'Project not found' });
     }
 
+    // 1. Read existing config so we don't accidentally delete the user's colors!
+    let existingConfig = {};
+    if (fs.existsSync(configPath)) {
+        try { existingConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')); } 
+        catch (e) { console.error("Error reading existing config:", e); }
+    }
+
+    // 2. Merge the old config with the new incoming data
+    const config = {
+        ...existingConfig,
+        name: version,
+        theme: { 
+            primaryColor: primaryColor || existingConfig.theme?.primaryColor,
+            logoUrl: logoUrl || existingConfig.theme?.logoUrl,
+            fontFamily: fontFamily || existingConfig.theme?.fontFamily,
+            darkMode: darkMode !== undefined ? darkMode : existingConfig.theme?.darkMode 
+        },
+        // Save the new sidebar order!
+        navigation: navigation || existingConfig.navigation || [], 
+        updatedAt: new Date().toISOString()
+    };
+
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
     res.json({ message: 'Settings saved. Rebuilding site in background...' });
 
+    // Wake up the worker to rebuild the sidebar!
     const buildScriptPath = path.join(__dirname, '../build/build.js');
     const buildProcess = spawn("node", [buildScriptPath]);
     
@@ -614,6 +809,20 @@ app.post("/api/ask", async (req, res) => {
         res.status(500).json({ error: "Internal server error." });
     }
 })
+
+// --- GLOBAL ERROR HANDLER ---
+app.use((err, req, res, next) => {
+    // Catch CSRF token errors specifically
+    if (err.code === 'EBADCSRFTOKEN') {
+        console.error('🚫 CSRF Token missing or invalid for:', req.path);
+        return res.status(403).json({ 
+            error: 'Security token expired or invalid. Please refresh the page.' 
+        });
+    }
+    
+    // Pass any other errors down the line
+    next(err);
+});
 
 const PORT = 4000;
 app.listen(PORT, () => {

@@ -22,20 +22,30 @@ export default function DocEngine({ customTenant, customVersion }) {
     setIsPreview(window !== window.top);
   }, []);
 
-  // Fetch the custom color theme if it exists
+ // Fetch the custom color theme if it exists
   useEffect(() => {
     if (!tenant || !version) return;
     
-    fetch(`/${tenant}/${version}/mint.json`, { cache: "no-store" })
+    // 1. ADDED THE API URL SO IT HITS YOUR BACKEND
+    const API_URL = import.meta.env.VITE_API_URL; 
+    
+    // 2. FIXED THE FETCH PATH TO MATCH DOCPAGE.JSX
+    fetch(`${API_URL}/api/static/${tenant}/${version}/mint.json`, { cache: "no-store" })
       .then(res => res.ok ? res.json() : null)
       .then(config => {
-        if (config && config.colors && config.colors.primary) {
-          document.documentElement.style.setProperty("--primary-brand", config.colors.primary);
+        // 3. FIXED THE IDENTITY CRISIS TO READ YOUR CUSTOM JSON FORMAT
+        const brandColor = config?.theme?.primaryColor || config?.colors?.primary;
+        
+        if (brandColor) {
+          document.documentElement.style.setProperty("--primary-brand", brandColor);
         } else {
-          document.documentElement.style.setProperty("--primary-brand", "#0fba81"); // Default Mintlify Green!
+          document.documentElement.style.setProperty("--primary-brand", "#0fba81"); // Default Mintlify Green
         }
       })
-      .catch(() => document.documentElement.style.setProperty("--primary-brand", "#0fba81"));
+      .catch((err) => {
+        console.error("Failed to load theme config:", err);
+        document.documentElement.style.setProperty("--primary-brand", "#0fba81");
+      });
   }, [tenant, version]);
 
   return (

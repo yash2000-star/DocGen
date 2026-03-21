@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import Prism from "prismjs";
 import "prismjs/components/prism-javascript";
 import DOMPurify from 'isomorphic-dompurify';
+import Breadcrumbs from "../components/mdx/Breadcrumbs";
 
 import { evaluate } from "@mdx-js/mdx";
 import * as runtime from "react/jsx-runtime";
@@ -10,7 +11,7 @@ import {
   Note, Warning, Steps, Step, CodeBlock, Tabs, Tab, Card, CardGroup, Tip, 
   Info, Danger, Accordion, AccordionGroup, Badge, Callout, ParamField, 
   ResponseField, Expandable, Frame, CodeGroup, Table, Th, Td, Check, 
-  Update, Tooltip, RequestExample, ResponseExample, ApiPlayground
+  Update, Tooltip, RequestExample, ResponseExample, ApiPlayground, CodeGenerator
 } from "../components/mdx/MdxComponents";
 
 // Helper function to turn heading text into URL-safe IDs
@@ -65,21 +66,8 @@ export default function DocPage({ customTenant, customVersion }) {
       })
       .then(async (mdxString) => {
         try {
-          // --- SECURITY: LAYER 1 XSS PREVENTION ---
-          // Sanitize the MDX string first — removes any malicious script tags [cite: 151, 152]
-          const cleanMdxString = DOMPurify.sanitize(mdxString, {
-            ALLOWED_TAGS: [
-              'Note','Warning','Steps','Step','Card','CardGroup','CodeGroup',
-              'Tabs','Tab','Accordion','p','h1','h2','h3','h4','ul','ol','li',
-              'code','pre','strong','em','a','img','table','tr','td','th'
-            ],
-            ALLOWED_ATTR: [
-              'href','src','alt','title','language','name','type','required','default'
-            ],
-          });
-
-          // Compile the CLEANED text into live React components!
-          const { default: CompiledComponent } = await evaluate(cleanMdxString, {
+          // We removed DOMPurify here because it destroys React JSX objects like body={{ "name": "Yash" }}
+          const { default: CompiledComponent } = await evaluate(mdxString, {
             ...runtime,
           });
 
@@ -108,7 +96,7 @@ export default function DocPage({ customTenant, customVersion }) {
     Note, Warning, Steps, Step, CodeBlock, Tabs, Tab, Card, CardGroup, Tip, 
     Info, Danger, Accordion, AccordionGroup, Badge, Callout, ParamField, 
     ResponseField, Expandable, Frame, CodeGroup, table: Table, th: Th, 
-    td: Td, Check, Update, Tooltip, RequestExample, ResponseExample, ApiPlayground,
+    td: Td, Check, Update, Tooltip, RequestExample, ResponseExample, ApiPlayground, CodeGenerator,
     
     h1: ({ children, ...props }) => <h1 id={slugify(children)} style={{ marginTop: '40px', scrollMarginTop: '80px' }} {...props}>{children}</h1>,
     h2: ({ children, ...props }) => <h2 id={slugify(children)} style={{ marginTop: '40px', scrollMarginTop: '80px', borderBottom: '1px solid #e2e8f0', paddingBottom: '8px' }} {...props}>{children}</h2>,
@@ -118,6 +106,7 @@ export default function DocPage({ customTenant, customVersion }) {
 
   return (
     <div className="mdx-content">
+      <Breadcrumbs path={currentRoute} />
       <MdxContent components={mdxComponents} />
     </div>
   );

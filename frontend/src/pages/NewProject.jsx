@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/auth";
 import { createProject, updateProjectStatus } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
@@ -7,13 +7,27 @@ import { apiFetch } from '../lib/api';
 
 export default function NewProject() {
   const navigate = useNavigate();
-  
+  const [searchParams] = useSearchParams();
+
   // State Machine
   const [step, setStep] = useState("form"); // 'form' | 'generating' | 'done'
   const [repoUrl, setRepoUrl] = useState("");
   const [projectName, setProjectName] = useState("");
   const [error, setError] = useState("");
   const [projectId, setProjectId] = useState(null);
+
+  // --- NEW: Auto-fill from URL if we used the QuickRouter URL swap ---
+  useEffect(() => {
+    const passedRepo = searchParams.get("repo");
+    if (passedRepo) {
+      setRepoUrl(passedRepo);
+      const parts = passedRepo.split("/");
+      const extracted = parts[parts.length - 1];
+      if (extracted) {
+        setProjectName(extracted.replace(".git", ""));
+      }
+    }
+  }, [searchParams]);
 
   // Auto-extract project name from GitHub URL
   const handleUrlChange = (e) => {
