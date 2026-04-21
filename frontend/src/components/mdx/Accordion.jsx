@@ -1,13 +1,10 @@
 import React, { useState } from "react";
+import { ChevronDown } from "lucide-react";
+import { IconResolver } from "./IconResolver";
 
 export function AccordionGroup({ children }) {
   return (
-    <div style={{ 
-      display: "flex", 
-      flexDirection: "column", 
-      gap: "8px", 
-      margin: "32px 0" 
-    }}>
+    <div className="flex flex-col gap-2 my-8">
       {children}
     </div>
   );
@@ -17,58 +14,36 @@ export function Accordion({ title, icon, children }) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div style={{ 
-      border: "1px solid #e2e8f0", 
-      borderRadius: "8px", 
-      overflow: "hidden",
-      backgroundColor: "#ffffff",
-      boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)"
-    }}>
+    <div className="group rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden transition-all duration-200 hover:border-slate-300 dark:hover:border-slate-700">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        style={{
-          width: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "16px",
-          backgroundColor: isOpen ? "#f8fafc" : "#ffffff", 
-          border: "none",
-          cursor: "pointer",
-          textAlign: "left",
-          transition: "background-color 0.2s ease"
-        }}
+        className={`
+          w-full flex items-center justify-between px-5 py-4 cursor-pointer outline-none transition-colors
+          ${isOpen ? "bg-slate-50/50 dark:bg-slate-800/20" : "bg-transparent"}
+        `}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {icon && <span style={{ fontSize: "18px" }}>{icon}</span>}
-          <strong style={{ color: "#0f172a", fontSize: "15px", fontWeight: "600" }}>
+        <div className="flex items-center gap-3">
+          {icon && (
+            <IconResolver name={icon} size={18} className="text-slate-500 dark:text-slate-400" />
+          )}
+          <strong className="text-[15px] font-semibold text-slate-900 dark:text-slate-100">
             {title}
           </strong>
         </div>
         
-        {/* The rotating chevron arrow */}
-        <span style={{ 
-          color: "#64748b", 
-          fontSize: "12px",
-          transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", 
-          transition: "transform 0.2s ease" 
-        }}>
-          ▼
-        </span>
+        <div className={`text-slate-400 transition-transform duration-200 ${isOpen ? "rotate-180" : "rotate-0"}`}>
+          <ChevronDown size={18} />
+        </div>
       </button>
       
-      {/* The content that shows/hides */}
-      {isOpen && (
-        <div style={{ 
-          padding: "16px", 
-          borderTop: "1px solid #e2e8f0", 
-          color: "#475569", 
-          lineHeight: "1.6",
-          fontSize: "15px"
-        }}>
+      {/* Content */}
+      <div 
+        className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? "max-h-[1000px] opacity-100" : "max-h-0 opacity-0"}`}
+      >
+        <div className="p-5 border-t border-slate-100 dark:border-slate-800 text-[15px] text-slate-600 dark:text-slate-400 leading-relaxed">
           {children}
         </div>
-      )}
+      </div>
     </div>
   );
 }

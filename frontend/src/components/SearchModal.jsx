@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams } from "react-router-dom";
 
-// --- NEW: Extracts a small sentence around the matched word ---
 function getSnippet(text, searchTerms) {
   if (!text || searchTerms.length === 0) return "";
   const lowerText = text.toLowerCase();
@@ -16,17 +15,14 @@ function getSnippet(text, searchTerms) {
 
   if (firstMatchIndex === -1) return text.substring(0, 80) + "...";
 
-  // Grab ~30 characters before and ~60 after the match to create context
   const start = Math.max(0, firstMatchIndex - 30);
   const end = Math.min(text.length, firstMatchIndex + 60);
   return (start > 0 ? "..." : "") + text.substring(start, end).trim() + "...";
 }
 
-// --- NEW: Highlights the matched word in the snippet ---
 function HighlightedText({ text, searchTerms }) {
   if (!text || searchTerms.length === 0) return <span>{text}</span>;
   
-  // Creates a regex to find all search terms, ignoring case
   const regex = new RegExp(`(${searchTerms.join('|')})`, 'gi');
   const parts = text.split(regex);
 
@@ -34,7 +30,7 @@ function HighlightedText({ text, searchTerms }) {
     <span>
       {parts.map((part, i) =>
         searchTerms.some(term => term.toLowerCase() === part.toLowerCase()) ? (
-          <span key={i} style={{ color: "var(--primary-brand)", fontWeight: "600", backgroundColor: "rgba(15, 186, 129, 0.15)", padding: "0 2px", borderRadius: "2px" }}>
+          <span key={i} className="text-[color:var(--primary-brand)] bg-[color:var(--primary-brand)]/15 font-semibold px-1 rounded-sm">
             {part}
           </span>
         ) : (
@@ -107,20 +103,17 @@ export default function SearchModal() {
     const filtered = index.filter(item => {
       const textToSearch = (item.title + " " + (item.content || "")).toLowerCase();
       return searchTerms.every(term => textToSearch.includes(term));
-    }).slice(0, 6); // Top 6 results for a clean modal
+    }).slice(0, 6);
 
     setResults(filtered);
   }
 
   function executeSearch(routeWithHash) {
-    // Split the route from the deep-link hash!
     const [cleanRoute, hash] = routeWithHash.split('#');
     
-    // 1. Tell DocPage to load the file
     window.dispatchEvent(new CustomEvent("doc-change", { detail: cleanRoute }));
     setIsOpen(false);
 
-    // 2. Wait exactly 300ms for the MDX to render, then scroll to the exact heading!
     if (hash) {
       setTimeout(() => {
         const element = document.getElementById(hash);
@@ -150,44 +143,37 @@ export default function SearchModal() {
   const activeSearchTerms = query.toLowerCase().split(' ').filter(Boolean);
 
   return (
-    <div style={{
-      position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-      backgroundColor: "rgba(15, 23, 42, 0.4)", backdropFilter: "blur(4px)",
-      display: "flex", justifyContent: "center", alignItems: "flex-start",
-      paddingTop: "12vh", zIndex: 9999
-    }} onClick={() => setIsOpen(false)}>
-      
+    <div 
+      className="fixed inset-0 z-[9999] bg-slate-900/50 backdrop-blur-sm flex justify-center items-start pt-[12vh]"
+      onClick={() => setIsOpen(false)}
+    >
       <div 
-        style={{
-          width: "100%", maxWidth: "650px", backgroundColor: "#ffffff",
-          borderRadius: "12px", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
-          overflow: "hidden", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column"
-        }}
+        className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()} 
       >
-        {/* Search Input */}
-        <div style={{ display: "flex", alignItems: "center", padding: "16px 20px", borderBottom: "1px solid #e2e8f0" }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: "12px" }}>
+        <div className="flex items-center p-4 border-b border-slate-200 dark:border-slate-800">
+          <svg className="mr-3 text-slate-500 dark:text-slate-400" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
              <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search documentation..."
+            placeholder={document.documentElement.dataset.searchPrompt || "Search documentation..."}
             value={query}
             onChange={handleSearch}
             onKeyDown={handleModalKeyDown}
-            style={{ flex: 1, border: "none", outline: "none", fontSize: "16px", color: "#0f172a", backgroundColor: "transparent" }}
+            className="flex-1 bg-transparent border-none outline-none text-lg text-slate-900 dark:text-slate-100 placeholder-slate-400"
           />
-          <button onClick={() => setIsOpen(false)} style={{
-            background: "#f8fafc", border: "1px solid #e2e8f0", padding: "4px 8px",
-            borderRadius: "6px", fontSize: "11px", color: "#64748b", cursor: "pointer", fontWeight: "600"
-          }}>ESC</button>
+          <button 
+            onClick={() => setIsOpen(false)} 
+            className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2.5 py-1 rounded-md text-[11px] font-semibold text-slate-500 dark:text-slate-400 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+          >
+            ESC
+          </button>
         </div>
 
-        {/* Results */}
         {results.length > 0 && (
-          <div style={{ padding: "12px", maxHeight: "450px", overflowY: "auto" }}>
+          <div className="max-h-[60vh] overflow-y-auto p-2 space-y-1">
             {results.map((item, i) => {
               const isActive = i === selectedIndex;
               const snippet = getSnippet(item.content, activeSearchTerms);
@@ -197,27 +183,17 @@ export default function SearchModal() {
                   key={i}
                   onMouseEnter={() => setSelectedIndex(i)}
                   onClick={() => executeSearch(item.route)}
-                  style={{
-                    padding: "12px 16px",
-                    cursor: "pointer",
-                    borderRadius: "8px",
-                    backgroundColor: isActive ? "rgba(15, 186, 129, 0.05)" : "transparent",
-                    borderLeft: isActive ? "2px solid var(--primary-brand)" : "2px solid transparent",
-                    marginLeft: "-2px",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "6px"
-                  }}
+                  className={`flex flex-col gap-1.5 p-3 cursor-pointer rounded-lg transition-colors border-l-2 ${isActive ? "bg-[color:var(--primary-brand)]/10 border-[color:var(--primary-brand)]" : "border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50"}`}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={isActive ? "var(--primary-brand)" : "#94a3b8"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <div className="flex items-center gap-2">
+                    <svg className={isActive ? "text-[color:var(--primary-brand)]" : "text-slate-400 dark:text-slate-500"} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                        <line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line>
                     </svg>
-                    <strong style={{ fontSize: "14px", color: isActive ? "var(--primary-brand)" : "#0f172a", fontWeight: "600" }}>{item.title}</strong>
+                    <strong className={`text-sm font-semibold ${isActive ? "text-[color:var(--primary-brand)]" : "text-slate-900 dark:text-slate-100"}`}>{item.title}</strong>
                   </div>
                   
                   {/* Context Snippet */}
-                  <span style={{ fontSize: "13px", color: "#64748b", paddingLeft: "22px", lineHeight: "1.5" }}>
+                  <span className="text-[13px] text-slate-500 dark:text-slate-400 pl-5 leading-relaxed">
                     <HighlightedText text={snippet} searchTerms={activeSearchTerms} />
                   </span>
                 </div>
@@ -228,8 +204,8 @@ export default function SearchModal() {
         
         {/* Empty State */}
         {query && results.length === 0 && (
-          <div style={{ padding: "40px", textAlign: "center", color: "#64748b", fontSize: "14px" }}>
-            No results found for "<span style={{ color: "#0f172a", fontWeight: "500" }}>{query}</span>"
+          <div className="p-10 text-center text-sm text-slate-500 dark:text-slate-400">
+            No results found for "<span className="font-medium text-slate-900 dark:text-slate-100">{query}</span>"
           </div>
         )}
       </div>

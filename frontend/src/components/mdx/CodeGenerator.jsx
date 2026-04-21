@@ -3,7 +3,7 @@ import { CodeGroup } from "./CodeGroup";
 import CodeBlock from "./CodeBlock";
 
 export function CodeGenerator({ method = "GET", endpoint = "/", body = null }) {
-  // In a real SaaS, this baseUrl would come from the user's mint.json config!
+  // In a real SaaS, this baseUrl would come from the user's docs.json config!
   const baseUrl = "https://api.yourdomain.com"; 
   const fullUrl = `${baseUrl}${endpoint}`;
   

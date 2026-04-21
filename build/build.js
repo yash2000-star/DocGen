@@ -213,15 +213,43 @@ async function build() {
   }
 
   const args = process.argv.slice(2);
-  // Collect all arguments EXCEPT '--webhook' to get an array of specific files
-  const targetRoutes = args.filter(arg => arg !== '--webhook');
+const scopeIndex = args.indexOf('--scope');
+const targetScope = scopeIndex !== -1 ? args[scopeIndex + 1] : null;
 
-  const scannedDocs = scanDocs(DOCS_PATH);
-  const docs = [];
+let buildDir = DOCS_PATH;
+if (targetScope) {
+    // If Express told us to build a specific project, ONLY look in that folder!
+    buildDir = path.join(DOCS_PATH, targetScope);
+    console.log(`\n[Worker] 🎯 Scoped build active. Only building: ${targetScope}`);
+} else {
+    // Fallback just in case we run it manually
+    console.log(`\n[Worker] ⚠️ Global build active. Rebuilding EVERYTHING.`);
+}
+
+// 3. Make sure the folder actually exists before we try to read it
+if (!fs.existsSync(buildDir)) {
+    console.error(`[Worker] Error: The directory ${buildDir} does not exist.`);
+    process.exit(1);
+}
+
+// 4. Run the scanner ONLY on the targeted directory
+// We pass targetScope so the URL routes stay correct (e.g., yash2000-star/to-do-list/...)
+// 4. Run the scanner ONLY on the targeted directory
+console.log(`[Worker] Scanning files in: ${buildDir}`);
+
+// We assign this directly to scannedDocs so it only scans the scoped folder!
+const scannedDocs = scanDocs(buildDir, targetScope ? `${targetScope}/` : "");
+const docs = [];
   const searchIndex = [];
   const aiChunks = [];
 
   for (const doc of scannedDocs) {
+    // --- THE OVERACHIEVER STOPPER ---
+    // If a scope is provided, completely ignore files outside of it!
+    if (targetScope && !doc.route.startsWith(targetScope)) {
+        continue; 
+    }
+
     const result = await convertMarkdownToHTML(doc.filePath);
     const title = result.meta.title || extractTitle(result.raw);
     const order = result.meta.order || 999;
@@ -237,13 +265,11 @@ async function build() {
       group: result.meta.group || "Miscellaneous",
     });
 
-    // --- UPDATED: Pushing deep-linked sections into the index ---
     const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
     searchIndex.push(...sections);
 
-    // If the array is empty, build everything. If it has files, ONLY build those files!
-  const shouldGenerateVectors = targetRoutes.length === 0 || targetRoutes.includes(doc.route);
-
+    // If it made it past the "continue" guard above, it belongs to our project and needs vectors!
+    const shouldGenerateVectors = true;
     // Chunking Engine
     if (shouldGenerateVectors) {
     const paragraphs = result.raw.split("\n\n");
@@ -339,21 +365,64 @@ async function build() {
 
      // --- UPDATED: Smart Config Resolver ---
       let sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docgen.json");
-      let destConfigPath = path.join(targetDir, "mint.json"); // Always output as mint.json for the frontend
+      let destConfigPath = path.join(targetDir, "docs.json"); // Always output as docs.json for the frontend
 
-      // Fallback to mint.json if docgen.json doesn't exist (e.g., imported from GitHub)
+      // Fallback chain: docgen.json → docs.json → mint.json (backwards compat)
+      if (!fs.existsSync(sourceConfigPath)) {
+        sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docs.json");
+      }
       if (!fs.existsSync(sourceConfigPath)) {
         sourceConfigPath = path.join(DOCS_PATH, tenant, version, "mint.json");
       }
 
-      let siteConfig = { colors: { primary: "#3b82f6" } }; // Default fallback
+      // Deep merge utility: user values always win over defaults
+      function deepMerge(target, source) {
+        const result = { ...target };
+        for (const key of Object.keys(source)) {
+          if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+            result[key] = deepMerge(result[key] || {}, source[key]);
+          } else if (source[key] !== undefined && source[key] !== null && source[key] !== '') {
+            // Only overwrite defaults with non-empty user values
+            result[key] = source[key];
+          } else if (!(key in result)) {
+            result[key] = source[key];
+          }
+        }
+        return result;
+      }
+
+      // Full extended schema as default fallback
+      const defaultConfig = {
+        "$schema": "https://mintlify.com/docs.json",
+        name: "",
+        logo: { light: "/logo/light.svg", dark: "/logo/dark.svg" },
+        favicon: "/favicon.png",
+        colors: { primary: "#3b82f6", light: "#ffffff", dark: "#000000" },
+        theme: "mint",
+        navigation: [],
+        tabs: [],
+        anchors: [],
+        topbarLinks: [],
+        topbarCtaButton: { name: "", url: "" },
+        footerSocials: { github: "", twitter: "", linkedin: "" },
+        backgroundImage: "",
+        modeToggle: { default: "light", isHidden: false },
+        api: { baseUrl: "", auth: { method: "bearer", name: "" } },
+        analytics: { posthog: { apiKey: "" }, ga4: { measurementId: "" }, amplitude: { apiKey: "" } },
+        search: { prompt: "Search documentation..." },
+        metadata: { "og:title": "", "og:description": "", "og:image": "" }
+      };
+
+      let siteConfig = { ...defaultConfig };
 
       if (fs.existsSync(sourceConfigPath)) {
         try {
             const rawConfig = fs.readFileSync(sourceConfigPath, 'utf8');
-            siteConfig = JSON.parse(rawConfig);
-            fs.copyFileSync(sourceConfigPath, destConfigPath);
-            console.log(`[Config] Loaded settings for ${tenant}/${version}`);
+            const userConfig = JSON.parse(rawConfig);
+            // Deep merge: defaults + user config (user values always win)
+            siteConfig = deepMerge(defaultConfig, userConfig);
+            fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
+            console.log(`[Config] Loaded and merged settings for ${tenant}/${version}`);
         } catch (e) {
             console.error(`[Config] Error parsing config for ${tenant}/${version}:`, e);
             fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));

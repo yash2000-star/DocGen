@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { supabase, handleFirstLogin } from "./lib/auth"; 
+import { supabase, handleFirstLogin, claimOrphanProjects } from "./lib/auth"; 
 import NewProject from "./pages/NewProject";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
@@ -10,6 +10,14 @@ import Dashboard from "./pages/Dashboard";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectOverview from "./pages/ProjectOverview";
 import ProjectSettings from "./pages/ProjectSettings";
+import DomainSetup from "./pages/settings/DomainSetup";
+import Authentication from "./pages/settings/Authentication";
+import General from "./pages/settings/General";
+import ApiKeys from "./pages/settings/ApiKeys";
+import DangerZone from "./pages/settings/DangerZone";
+import Profile from "./pages/settings/Profile";
+import Billing from "./pages/settings/Billing";
+import AgentSkills from "./pages/settings/AgentSkills";
 import Editor from "./pages/Editor";
 import NavigationEditor from "./pages/NavigationEditor";
 import Analytics from "./pages/Analytics";
@@ -41,6 +49,14 @@ function AuthListener() {
         }
         if (event === 'SIGNED_IN' && session?.user) {
           handleFirstLogin(session.user);
+          claimOrphanProjects(); 
+          
+          // --- THE LOOP FIX ---
+          // Only redirect to the dashboard if they are on a public page!
+          const currentPath = window.location.pathname;
+          if (currentPath === '/' || currentPath === '/login') {
+            navigate('/dashboard', { replace: true });
+          }
         }
       }
     );
@@ -128,7 +144,17 @@ function App() {
             <Route index element={<ProjectOverview />} />
             
             {/* This loads when the URL is /dashboard/:id/settings */}
-            <Route path="settings" element={<ProjectSettings />} />
+            <Route path="settings" element={<ProjectSettings />}>
+              <Route index element={<Navigate to="domain" replace />} />
+              <Route path="domain" element={<DomainSetup />} />
+              <Route path="authentication" element={<Authentication />} />
+              <Route path="general" element={<General />} />
+              <Route path="agent" element={<AgentSkills />} />
+              <Route path="api-keys" element={<ApiKeys />} />
+              <Route path="danger-zone" element={<DangerZone />} />
+              <Route path="profile" element={<Profile />} />
+              <Route path="billing" element={<Billing />} />
+            </Route>
 
             <Route path="editor" element={<Editor />} />
 
@@ -138,7 +164,7 @@ function App() {
             
           </Route>
 
-          <Route path="/docs/:tenant/:version" element={<ProtectedRoute><DocEngine /></ProtectedRoute>} />
+          <Route path="/docs/:tenant/:version/*" element={<ProtectedRoute><DocEngine /></ProtectedRoute>} />
           
           {/* --- NEW: The PLG Explore Route --- */}
           <Route path="/explore/:tenant/:version" element={<Explore />} />

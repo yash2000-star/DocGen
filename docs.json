@@ -1,0 +1,53 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "favicon": "/favicon.png",
+  "colors": {
+    "primary": "#3b82f6",
+    "light": "#ffffff",
+    "dark": "#000000"
+  },
+  "theme": "mint",
+  "navigation": [],
+  "tabs": [],
+  "anchors": [],
+  "topbarLinks": [],
+  "topbarCtaButton": {
+    "name": "",
+    "url": ""
+  },
+  "footerSocials": {
+    "github": "",
+    "twitter": "",
+    "linkedin": ""
+  },
+  "backgroundImage": "",
+  "modeToggle": {
+    "default": "light",
+    "isHidden": false
+  },
+  "api": {
+    "baseUrl": "",
+    "auth": {
+      "method": "bearer",
+      "name": ""
+    }
+  },
+  "analytics": {
+    "posthog": { "apiKey": "" },
+    "ga4": { "measurementId": "" },
+    "amplitude": { "apiKey": "" }
+  },
+  "search": {
+    "prompt": "Search documentation..."
+  },
+  "metadata": {
+    "og:title": "",
+    "og:description": "",
+    "og:image": ""
+  }
+}

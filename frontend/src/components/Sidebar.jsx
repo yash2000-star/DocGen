@@ -1,104 +1,84 @@
-import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom"; 
+import { NavLink } from "react-router-dom"; 
 import SearchModal from "./SearchModal";
 
-// --- NEW: Accept the custom props! ---
-export default function Sidebar({ customTenant, customVersion }) {
-  const params = useParams();
+// Helper function to format clean titles from URL slugs
+function formatTitle(slug) {
+  if (!slug) return "Index";
+  const parts = slug.split('/');
+  const lastPart = parts[parts.length - 1]; // e.g., 'quickstart' from 'getting-started/quickstart'
+  return lastPart
+    .replace(/[-_]/g, ' ')
+    .split(' ')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+// --- NEW: Accept the custom props + the docs.json navigation array! ---
+export default function Sidebar({ customTenant, customVersion, navigation = [] }) {
   
-  // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
-  const tenant = customTenant || params.tenant;
-  const version = customVersion || params.version;
-  
-  const [sidebar, setSidebar] = useState([]);
-  const [activeRoute, setActiveRoute] = useState("index");
-
-  useEffect(() => {
-    if (!tenant || !version) return;
-
-    const API_URL = import.meta.env.VITE_API_URL;
-
-    fetch(`${API_URL}/api/static/${tenant}/${version}/sidebar.json`)
-      .then((res) => {
-          if (!res.ok) throw new Error("Sidebar not found");
-          return res.json();
-      })
-      .then((data) => setSidebar(data))
-      .catch((err) => {
-          console.log("No sidebar for this version/tenant");
-          setSidebar([]);
-      });
-  }, [tenant, version]);
-
-  useEffect(() => {
-    function handleDocChange(event) {
-      if (event.detail) setActiveRoute(event.detail);
-    }
-    window.addEventListener("doc-change", handleDocChange);
-    return () => window.removeEventListener("doc-change", handleDocChange);
-  }, []);
-
-  function renderItems(items) {
-    return items.map((item, index) => {
-      // IF IT IS A FOLDER
-      if (item.children) {
-        return (
-          <div key={index} style={{ marginTop: "24px" }}>
-            <strong style={{ 
-              color: "#0f172a", 
-              fontSize: "13px", 
-              fontWeight: "600",
-              textTransform: "capitalize",
-              paddingLeft: "12px",
-              display: "block",
-              marginBottom: "8px"
-            }}>
-              {item.title}
-            </strong>
-            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              {renderItems(item.children)}
-            </div>
-          </div>
-        );
-      }
-
-      // IF IT IS A FILE
-      const isActive = activeRoute === item.route;
+  function renderNavigation() {
+    return navigation.map((navGroup, index) => {
+      // navGroup format from docs.json: { group: "String", pages: [...] }
+      const groupName = navGroup.group || "Documentation";
+      const pages = navGroup.pages || [];
 
       return (
-        <div key={index}>
-          <a
-            href="#"
-            style={{ 
-              textDecoration: "none", 
-              display: "block",
-              padding: "6px 12px",
-              borderRadius: "6px",
-              fontSize: "13px",
-              color: isActive ? "var(--primary-brand)" : "#64748b",
-              fontWeight: isActive ? "600" : "500",
-              backgroundColor: isActive ? "rgba(15, 186, 129, 0.1)" : "transparent",
-              transition: "all 0.1s ease",
-              borderLeft: isActive ? "2px solid var(--primary-brand)" : "2px solid transparent",
-              marginLeft: "-2px" 
-            }}
-            onClick={(e) => {
-              e.preventDefault();
-              window.dispatchEvent(
-                new CustomEvent("doc-change", {
-                  detail: item.route,
-                }),
+        <div key={index} style={{ marginTop: "24px" }}>
+          <strong style={{ 
+            color: "#0f172a", 
+            fontSize: "13px", 
+            fontWeight: "600",
+            textTransform: "capitalize",
+            paddingLeft: "12px",
+            display: "block",
+            marginBottom: "8px"
+          }}>
+            {groupName}
+          </strong>
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {pages.map((page, pIdx) => {
+              // Page could be just a string slug or an object if they customize further
+              const pageRoute = typeof page === 'string' ? page : page.route;
+              const pageTitle = typeof page === 'string' ? formatTitle(page) : page.title;
+              
+              // Construct the absolute path for React Router
+              const fullPath = `/docs/${customTenant}/${customVersion}/${pageRoute}`;
+
+              return (
+                <NavLink
+                  key={pIdx}
+                  to={fullPath}
+                  end={pageRoute === "index" || pageRoute === ""}
+                  style={({ isActive }) => ({ 
+                    textDecoration: "none", 
+                    display: "block",
+                    padding: "6px 12px",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    color: isActive ? "var(--primary-brand)" : "#64748b",
+                    fontWeight: isActive ? "600" : "500",
+                    backgroundColor: isActive ? "rgba(15, 186, 129, 0.1)" : "transparent",
+                    transition: "all 0.1s ease",
+                    borderLeft: isActive ? "2px solid var(--primary-brand)" : "2px solid transparent",
+                    marginLeft: "-2px" 
+                  })}
+                  onMouseOver={(e) => {
+                     // NavLink automatically applies the 'active' class, so we can check it
+                     if(!e.currentTarget.classList.contains('active')) {
+                       e.currentTarget.style.color = "#0f172a";
+                     }
+                  }}
+                  onMouseOut={(e) => {
+                     if(!e.currentTarget.classList.contains('active')) {
+                       e.currentTarget.style.color = "#64748b";
+                     }
+                  }}
+                >
+                  {pageTitle}
+                </NavLink>
               );
-            }}
-            onMouseOver={(e) => {
-               if(!isActive) e.currentTarget.style.color = "#0f172a";
-            }}
-            onMouseOut={(e) => {
-               if(!isActive) e.currentTarget.style.color = "#64748b";
-            }}
-          >
-            {item.title}
-          </a>
+            })}
+          </div>
         </div>
       );
     });
@@ -106,7 +86,11 @@ export default function Sidebar({ customTenant, customVersion }) {
 
   return (
     <div style={{ padding: "24px 12px 24px 24px" }}>
-      {renderItems(sidebar)}
+      {navigation.length > 0 ? renderNavigation() : (
+        <div style={{ color: "#64748b", fontSize: "13px", paddingLeft: "12px" }}>
+          No navigation available yet. Add items in docs.json.
+        </div>
+      )}
     </div>
   );
 }

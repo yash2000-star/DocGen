@@ -1,59 +1,56 @@
 import React from "react";
+import { IconResolver } from "./IconResolver";
 
 export function CardGroup({ children, cols = 2 }) {
+  // Use Tailwind Grid based on the requested columns.
+  // We use inline styling as a fallback because dynamic Tailwind class generation (grid-cols-[X]) 
+  // can sometimes be purged by Vite if it doesn't statically exist in the source text.
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: `repeat(${cols}, 1fr)`,
-      gap: "16px",
-      margin: "32px 0"
-    }}>
+    <div 
+      className="grid gap-4 my-8" 
+      style={{
+        gridTemplateColumns: `repeat(auto-fit, minmax(min(250px, 100%), 1fr))`
+      }}
+    >
       {children}
     </div>
   );
 }
 
 export function Card({ title, icon, href, children }) {
+  const isLink = !!href;
+  const Wrapper = isLink ? "a" : "div";
+  
   return (
-    <a 
-      href={href || "#"} 
-      style={{
-        display: "block",
-        padding: "24px",
-        border: "1px solid #e2e8f0",
-        borderRadius: "12px",
-        textDecoration: "none",
-        backgroundColor: "#ffffff",
-        transition: "all 0.2s ease-in-out",
-        cursor: "pointer",
-        boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.05)"
-      }}
-      onMouseOver={(e) => {
-        e.currentTarget.style.borderColor = "#cbd5e1";
-        e.currentTarget.style.boxShadow = "0 10px 15px -3px rgba(0, 0, 0, 0.1)";
-        e.currentTarget.style.transform = "translateY(-2px)";
-      }}
-      onMouseOut={(e) => {
-        e.currentTarget.style.borderColor = "#e2e8f0";
-        e.currentTarget.style.boxShadow = "0 1px 2px 0 rgba(0, 0, 0, 0.05)";
-        e.currentTarget.style.transform = "translateY(0)";
-      }}
+    <Wrapper 
+      href={href || undefined}
+      className={`
+        block p-6 bg-white dark:bg-slate-900 
+        border border-slate-200 dark:border-slate-800 
+        rounded-xl shadow-sm 
+        transition-all duration-200 ease-in-out
+        ${isLink ? 'cursor-pointer hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700 hover:-translate-y-0.5' : ''}
+      `}
       onClick={(e) => {
-        if (href) {
+        if (isLink && href.startsWith('/')) {
           e.preventDefault();
           window.dispatchEvent(new CustomEvent("doc-change", { detail: href }));
         }
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
-        {icon && <span style={{ fontSize: "20px" }}>{icon}</span>}
-        <h3 style={{ margin: 0, fontSize: "16px", color: "#0f172a", fontWeight: "600" }}>
+      <div className="flex items-center gap-3 mb-3">
+        {icon && (
+          <div className="flex items-center justify-center p-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700">
+            <IconResolver name={icon} size={20} className="text-slate-700 dark:text-slate-300" />
+          </div>
+        )}
+        <h3 className="m-0 text-[16px] font-semibold text-slate-900 dark:text-slate-100 leading-tight tracking-tight">
           {title}
         </h3>
       </div>
-      <div style={{ margin: 0, color: "#64748b", fontSize: "14px", lineHeight: "1.6" }}>
-  {children}
-</div>
-    </a>
+      <div className="m-0 text-[14px] text-slate-600 dark:text-slate-400 leading-relaxed">
+        {children}
+      </div>
+    </Wrapper>
   );
 }

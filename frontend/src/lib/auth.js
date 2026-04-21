@@ -9,7 +9,8 @@ export const loginWithGitHub = () => {
   return supabase.auth.signInWithOAuth({
     provider: "github",
     options: {
-      redirectTo: "http://localhost:5173/dashboard" 
+      redirectTo: "http://localhost:5173/dashboard",
+      scopes: "repo" // <-- THIS IS THE MAGIC WORD. It asks for repository access.
     }
   });
 };
@@ -47,4 +48,30 @@ export async function handleFirstLogin(user) {
     avatar_url:      user.user_metadata?.avatar_url || '',
     created_at:      new Date().toISOString(),
   });
+}
+
+// --- NEW: PLG Orphan Sweeper ---
+export async function claimOrphanProjects() {
+  const { data: { session } } = await supabase.auth.getSession();
+  const user = session?.user;
+  
+  if (!user) return;
+
+  // Supabase stores the GitHub username here when they log in via OAuth
+  const githubUsername = user.user_metadata?.preferred_username || user.user_metadata?.user_name;
+
+  if (githubUsername) {
+    // Find any orphan projects matching this username and claim them!
+    const { error } = await supabase
+      .from('projects')
+      .update({ user_id: user.id })
+      .is('user_id', null)
+      .eq('tenant_name', githubUsername);
+
+    if (!error) {
+      console.log(`🧹 Swept and claimed orphan projects for: ${githubUsername}`);
+    } else {
+      console.error("Failed to claim orphans:", error);
+    }
+  }
 }

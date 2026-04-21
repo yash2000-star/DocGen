@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/auth";
-import { createProject, updateProjectStatus } from "../lib/projects";
+import { createProject } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
 import { apiFetch } from '../lib/api';
 
@@ -9,39 +9,39 @@ export default function NewProject() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
-  // State Machine
-  const [step, setStep] = useState("form"); // 'form' | 'generating' | 'done'
+  const [step, setStep] = useState("form"); 
   const [repoUrl, setRepoUrl] = useState("");
   const [projectName, setProjectName] = useState("");
   const [error, setError] = useState("");
   const [projectId, setProjectId] = useState(null);
+  
+  const [currentProgressStep, setCurrentProgressStep] = useState(0);
 
-  // --- NEW: Auto-fill from URL if we used the QuickRouter URL swap ---
+  const progressSteps = [
+    "Cloning repository...",
+    "Analyzing code architecture...",
+    "Generating AI documentation...",
+    "Compiling static site..."
+  ];
+
   useEffect(() => {
     const passedRepo = searchParams.get("repo");
     if (passedRepo) {
       setRepoUrl(passedRepo);
       const parts = passedRepo.split("/");
       const extracted = parts[parts.length - 1];
-      if (extracted) {
-        setProjectName(extracted.replace(".git", ""));
-      }
+      if (extracted) setProjectName(extracted.replace(".git", ""));
     }
   }, [searchParams]);
 
-  // Auto-extract project name from GitHub URL
   const handleUrlChange = (e) => {
     const url = e.target.value;
     setRepoUrl(url);
     const parts = url.split("/");
     const extracted = parts[parts.length - 1];
-    if (extracted) {
-      // Remove .git if they copied the clone URL
-      setProjectName(extracted.replace(".git", ""));
-    }
+    if (extracted) setProjectName(extracted.replace(".git", ""));
   };
 
-  // The core submit logic
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -54,12 +54,36 @@ export default function NewProject() {
     const { data: { user } } = await supabase.auth.getUser();
     const tenantName = user.user_metadata?.user_name || user.email.split("@")[0];
 
-    // 1. Create project row in Supabase first
+    // --- BULLETPROOF PRE-FLIGHT CHECK ---
+    // Using .limit(1) prevents crashes if duplicates accidentally exist
+    const { data: existingProjects, error: searchError } = await supabase
+      .from('projects')
+      .select('id, user_id, status')
+      .eq('tenant_name', tenantName)
+      .eq('project_name', projectName)
+      .limit(1); 
+
+    if (existingProjects && existingProjects.length > 0) {
+      const existingProject = existingProjects[0];
+
+      if (existingProject.user_id === user.id) {
+          // Scenario A: You own it. Go directly to dashboard.
+          navigate(`/dashboard/${existingProject.id}`);
+          return;
+      } else if (existingProject.user_id === null) {
+          // Scenario B: It's an orphan. Claim it, then go to dashboard.
+          await supabase.from('projects').update({ user_id: user.id }).eq('id', existingProject.id);
+          navigate(`/dashboard/${existingProject.id}`);
+          return;
+      }
+    }
+
+    // --- Scenario C: BRAND NEW PROJECT FLOW ---
     const { data: project, error: dbErr } = await createProject({
       repo_url: repoUrl,
       project_name: projectName,
       tenant_name: tenantName,
-      status: "building"
+      status: "running" 
     });
 
     if (dbErr) {
@@ -70,56 +94,69 @@ export default function NewProject() {
     setProjectId(project.id);
     setStep("generating");
 
-    try {
-      // 2. Call the existing backend route
-      const res = await apiFetch(`/api/github`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repoUrl,
-          projectName,
-          tenantName
-        })
-      });
-
-      // 3. Update project status based on result
-      if (res.ok) {
-        const result = await res.json();
-        // Fallback to 10 files if backend doesn't return count yet
-        const fileCount = result.fileProcessed || 10; 
-        await updateProjectStatus(project.id, "live", fileCount);
-      } else {
-        await updateProjectStatus(project.id, "failed", 0);
-        setError("Generation failed. Check server logs.");
-      }
-    } catch (err) {
-      await updateProjectStatus(project.id, "failed", 0);
-      setError("Server connection failed. Is the backend running?");
-    }
+    apiFetch(`/api/github`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repoUrl, projectName, tenantName })
+    })
+    .then(res => {
+        // AI Phase is done, Background Factory Worker is now compiling!
+        if (res.error) throw new Error(res.error);
+        setCurrentProgressStep(3); // Jump to "Compiling static site..."
+    })
+    .catch(err => {
+      setError("Server connection failed or timed out. Is the backend running?");
+      setStep("form");
+    });
   };
 
-  // Polling logic — check status every 3 seconds while generating
+  useEffect(() => {
+    if (step !== "generating") return;
+    
+    const timer = setInterval(() => {
+      setCurrentProgressStep(prev => prev < 2 ? prev + 1 : prev); 
+    }, 4500); 
+    
+    return () => clearInterval(timer);
+  }, [step]);
+
   useEffect(() => {
     if (step !== "generating" || !projectId) return;
     
-    const interval = setInterval(async () => {
-      const { data } = await supabase
-        .from("projects")
-        .select("status")
-        .eq("id", projectId)
-        .single();
-        
-      if (data?.status === "live") {
-        setStep("done");
-        clearInterval(interval);
-      } else if (data?.status === "failed") {
-        setError("Build failed in the background.");
-        setStep("form"); // Kick them back to form to try again
-        clearInterval(interval);
+    // 1. Supabase Realtime (Instant updates)
+    const subscription = supabase
+      .channel('project-generation-updates')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'projects', filter: `id=eq.${projectId}` },
+        (payload) => {
+          if (payload.new.status === 'successful' || payload.new.status === 'live') {
+            setCurrentProgressStep(3); 
+            setTimeout(() => setStep("done"), 1200); 
+          } else if (payload.new.status === 'failed') {
+            setError("Build failed in the background. Please check the logs.");
+            setStep("form");
+          }
+        }
+      )
+      .subscribe();
+      
+    // 2. Polling Fallback (Fires every 4s in case Realtime is disabled on the Postgres table)
+    const pollInterval = setInterval(async () => {
+      const { data } = await supabase.from('projects').select('status').eq('id', projectId).single();
+      if (data && (data.status === 'successful' || data.status === 'live')) {
+        setCurrentProgressStep(3); 
+        setTimeout(() => setStep("done"), 1200); 
+      } else if (data && data.status === 'failed') {
+        setError("Build failed in the background. Please check the logs.");
+        setStep("form");
       }
-    }, 3000);
-    
-    return () => clearInterval(interval);
+    }, 4000);
+
+    return () => {
+      supabase.removeChannel(subscription);
+      clearInterval(pollInterval);
+    };
   }, [step, projectId]);
 
   return (
@@ -128,7 +165,6 @@ export default function NewProject() {
       
       <div style={{ maxWidth: "600px", margin: "60px auto", padding: "0 20px" }}>
         
-        {/* Step Indicator */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "40px", fontSize: "14px", fontWeight: "500", color: "var(--text-muted)" }}>
           <span style={{ color: step === "form" ? "var(--primary-brand)" : "var(--text-main)" }}>1. Repository</span>
           <span style={{ color: "var(--border-color)" }}>──────────</span>
@@ -145,7 +181,6 @@ export default function NewProject() {
             </div>
           )}
 
-          {/* UI: STEP 1 - FORM */}
           {step === "form" && (
             <form onSubmit={handleSubmit}>
               <h2 style={{ fontSize: "24px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Import Repository</h2>
@@ -153,50 +188,50 @@ export default function NewProject() {
 
               <div style={{ marginBottom: "20px" }}>
                 <label style={{ display: "block", marginBottom: "8px", fontSize: "14px", fontWeight: "500", color: "var(--text-heading)" }}>GitHub Repository URL</label>
-                <input 
-                  type="url" 
-                  placeholder="https://github.com/username/repo" 
-                  value={repoUrl} 
-                  onChange={handleUrlChange} 
-                  required 
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-main)", fontSize: "15px", outline: "none" }} 
-                />
+                <input type="url" placeholder="https://github.com/username/repo" value={repoUrl} onChange={handleUrlChange} required style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-main)", fontSize: "15px", outline: "none" }} />
               </div>
 
               <div style={{ marginBottom: "32px" }}>
                 <label style={{ display: "block", marginBottom: "8px", fontSize: "14px", fontWeight: "500", color: "var(--text-heading)" }}>Project Name</label>
-                <input 
-                  type="text" 
-                  value={projectName} 
-                  onChange={(e) => setProjectName(e.target.value)} 
-                  required 
-                  style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-main)", fontSize: "15px", outline: "none" }} 
-                />
+                <input type="text" value={projectName} onChange={(e) => setProjectName(e.target.value)} required style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-main)", fontSize: "15px", outline: "none" }} />
               </div>
 
               <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
-                <button type="button" onClick={() => navigate("/dashboard")} style={{ padding: "10px 16px", background: "none", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>
-                  Cancel
-                </button>
-                <button type="submit" style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>
-                  Generate Docs
-                </button>
+                <button type="button" onClick={() => navigate("/dashboard")} style={{ padding: "10px 16px", background: "none", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>Cancel</button>
+                <button type="submit" style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>Generate Docs</button>
               </div>
             </form>
           )}
 
-          {/* UI: STEP 2 - GENERATING */}
           {step === "generating" && (
-            <div style={{ textAlign: "center", padding: "40px 0" }}>
-              <div style={{ width: "48px", height: "48px", border: "4px solid var(--border-color)", borderTopColor: "var(--primary-brand)", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto 24px" }}>
-                <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 0" }}>
+              <div style={{ width: "32px", height: "32px", border: "3px solid #f3f3f3", borderTop: "3px solid var(--primary-brand)", borderRadius: "50%", animation: "spin 1s linear infinite", marginBottom: "16px" }} />
+              <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+              <h2 style={{ fontSize: "18px", fontWeight: "600", margin: "0 0 8px 0", color: "var(--text-heading)" }}>Creating your docs</h2>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 32px 0" }}>This process typically takes 1-3 minutes to complete.</p>
+              
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px", width: "100%", maxWidth: "300px" }}>
+                {progressSteps.map((progressText, index) => {
+                  const isCompleted = index < currentProgressStep;
+                  const isActive = index === currentProgressStep;
+                  
+                  return (
+                    <div key={index} style={{ display: "flex", alignItems: "center", gap: "12px", opacity: (isCompleted || isActive) ? 1 : 0.4, transition: "opacity 0.3s" }}>
+                      <div style={{ 
+                        width: "20px", height: "20px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                        backgroundColor: isCompleted ? "var(--text-heading)" : "transparent",
+                        border: isCompleted ? "none" : isActive ? "2px solid var(--text-heading)" : "2px dashed var(--border-color)"
+                      }}>
+                        {isCompleted && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--bg-main)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+                      </div>
+                      <span style={{ fontSize: "14px", fontWeight: isActive ? "600" : "500", color: "var(--text-heading)" }}>{progressText}</span>
+                    </div>
+                  );
+                })}
               </div>
-              <h3 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", marginBottom: "8px" }}>Building your documentation</h3>
-              <p style={{ color: "var(--text-muted)", fontSize: "15px", fontFamily: "monospace" }}>AI is analyzing repository files...</p>
             </div>
           )}
 
-          {/* UI: STEP 3 - DONE */}
           {step === "done" && (
             <div style={{ textAlign: "center", padding: "20px 0" }}>
               <div style={{ width: "64px", height: "64px", backgroundColor: "#ecfdf5", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 24px", color: "#059669" }}>
@@ -205,8 +240,8 @@ export default function NewProject() {
               <h3 style={{ fontSize: "20px", fontWeight: "600", color: "var(--text-heading)", marginBottom: "8px" }}>Generation Complete!</h3>
               <p style={{ color: "var(--text-muted)", fontSize: "15px", marginBottom: "32px" }}>Your documentation is ready to view.</p>
               
-              <button onClick={() => navigate("/dashboard")} style={{ padding: "12px 24px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", cursor: "pointer" }}>
-                Go to Dashboard
+              <button onClick={() => navigate(`/dashboard/${projectId}`)} style={{ padding: "12px 24px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "15px", fontWeight: "600", cursor: "pointer" }}>
+                Go to Project Home
               </button>
             </div>
           )}

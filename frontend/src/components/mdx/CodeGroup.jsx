@@ -7,48 +7,34 @@ export function CodeGroup({ children }) {
   const tabs = React.Children.toArray(children);
 
   return (
-    <div style={{ 
-      margin: "32px 0", 
-      borderRadius: "8px", 
-      overflow: "hidden", 
-      border: "1px solid #1e293b", 
-      backgroundColor: "#0f172a", // Dark terminal background
-      boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)"
-    }}>
-      {/* --- INJECTED CSS FIX --- */}
+    <div className="my-6 rounded-xl overflow-hidden border border-slate-800 bg-[#0d1117] shadow-lg flex flex-col group/codegroup relative">
+      {/* --- INJECTED CSS FIX ---
+          Since CodeBlock already renders a rounded border and header, we strip the 
+          CodeBlock's outer wrapper and header exclusively when it's nested inside CodeGroup.
+      */}
       <style>{`
-        .code-group-wrapper > div { margin: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; }
-        .code-group-wrapper > div > div:first-child { display: none !important; }
+        .code-group-content > div { margin: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important; }
+        .code-group-content > div > div:first-child { display: none !important; } 
       `}</style>
 
-      {/* Dark Mode Tab Headers */}
-      <div style={{ 
-        display: "flex", 
-        backgroundColor: "#1e293b", 
-        borderBottom: "1px solid #334155",
-        overflowX: "auto"
-      }}>
+      {/* Dark Mode MacOS-style Tab Headers */}
+      <div className="flex bg-slate-800/60 border-b border-slate-700/60 overflow-x-auto hide-scrollbar">
         {tabs.map((tab, index) => {
           // Grab the title or language from the nested <CodeBlock>
           const title = tab.props?.title || tab.props?.language || `Tab ${index + 1}`;
+          const isActive = activeTab === index;
           
           return (
             <button
               key={index}
               onClick={() => setActiveTab(index)}
-              style={{
-                padding: "10px 16px",
-                cursor: "pointer",
-                backgroundColor: activeTab === index ? "#0f172a" : "transparent",
-                border: "none",
-                borderTop: activeTab === index ? "2px solid #38bdf8" : "2px solid transparent",
-                color: activeTab === index ? "#e2e8f0" : "#64748b",
-                fontWeight: "600",
-                fontSize: "12px",
-                fontFamily: "monospace",
-                transition: "all 0.2s ease",
-                whiteSpace: "nowrap"
-              }}
+              className={`
+                px-4 py-2.5 cursor-pointer border-none border-t-2 text-[12px] font-mono tracking-wide whitespace-nowrap transition-all duration-200
+                ${isActive 
+                  ? "bg-[#0d1117] text-slate-100 border-t-sky-400" 
+                  : "bg-transparent text-slate-400 border-t-transparent hover:bg-slate-700/30 hover:text-slate-300"
+                }
+              `}
             >
               {title}
             </button>
@@ -56,8 +42,8 @@ export function CodeGroup({ children }) {
         })}
       </div>
       
-      {/* The Active CodeBlock */}
-      <div className="code-group-wrapper">
+      {/* The Active CodeBlock (stripped of its own border via the CSS above) */}
+      <div className="code-group-content">
         {tabs[activeTab]}
       </div>
     </div>

@@ -1,9 +1,0 @@
-[
-  {
-    "title": "Welcome to Company B",
-    "route": "introduction",
-    "content": "\r  company b documentation\r \r welcome to the completely isolated documentation for company b. \r \r  strict isolation\r \r notice how you cannot see company a's files in the sidebar here.\r \r  search test\r if you search for the word \"securebanana\" right now, this search bar should show zero results. but if you search for our secret keyword \"zebraprotocol\", this page will appear!",
-    "tenant": "company-b",
-    "version": "v1"
-  }
-]

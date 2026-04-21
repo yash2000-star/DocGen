@@ -9,7 +9,7 @@ const helmet = require('helmet');
 const crypto = require('crypto');
 const cloneRepo = require("./gitServices");
 const scanCodeFiles = require("./codeScanner");
-const generateDocs = require("./aiWriter");
+const { generateDocs, generatePage, generateArchitectBlueprint } = require("./aiWriter");
 const analyzeRepo = require("./repoAnalyzer");
 const Razorpay = require('razorpay');
 
@@ -34,6 +34,9 @@ const askAI = require("./ai.service");
 const validator = require('validator');
 
 const app = express();
+const publicRoutes = require('./routes/public');
+const mcpRoutes = require('./routes/mcp');
+const { generateSkill, getSkillIndex } = require('../lib/generateSkill');
 
 app.use(cors({
     origin: 'http://localhost:5173', 
@@ -179,6 +182,33 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/static", express.static(path.join(__dirname, "../dist")));
+
+// --- NEW (PHASE 3): DYNAMIC DOCS FETCHING ROUTE ---
+app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
+    // req.params.docPath holds the exact file path dynamically matched
+    let docPath = req.params.docPath;
+
+    // AI Agents might request .md files directly, so strip the extension if present to match our .mdx files
+    if (docPath.endsWith('.md')) {
+        docPath = docPath.slice(0, -3);
+    }
+    
+    // Construct the absolute path. We enforce the .mdx extension here!
+    const absolutePath = path.resolve(__dirname, '..', 'dist', req.params.tenant, req.params.version, `${docPath}.mdx`);
+
+    if (fs.existsSync(absolutePath)) {
+        res.type('text/markdown').sendFile(absolutePath);
+    } else {
+        res.status(404).json({
+            error: "Document Not Found",
+            message: `The documentation page '${docPath}' could not be found. Check docs.json for typos.`,
+            requestedPath: docPath
+        });
+    }
+});
+
+app.use('/api/public', publicRoutes);
+app.use('/api/mcp', mcpRoutes);
 
 // --- SECURITY: LAYER 3 XSS PREVENTION (Input Sanitization) ---
 function sanitizeString(input, maxLength = 100) {
@@ -484,10 +514,11 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         const codeMap = analyzeRepo(downloadedFolderPath);
         console.log(`[GitHub API] Code Map generated successfully.`);
 
-        const foundFiles = scanCodeFiles(downloadedFolderPath);
-        console.log(`[GitHub API] Inspector found ${foundFiles.length} code files.`);
+        // NEW: Expanded scanner returns both code files AND context files
+        const { codeFiles: foundFiles, contextFiles } = scanCodeFiles(downloadedFolderPath);
+        console.log(`[GitHub API] Inspector found ${foundFiles.length} code files + ${contextFiles.length} context files.`);
 
-        if (foundFiles.length === 0) {
+        if (foundFiles.length === 0 && contextFiles.length === 0) {
             await supabase
                 .from('projects')
                 .update({ status: 'failed' })
@@ -501,24 +532,63 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
             fs.mkdirSync(targetDir, { recursive: true });
         }
 
+        // ═══════════════════════════════════════════════════════════
+        // PHASE 1: SUPER-ARCHITECT — Design the entire doc site
+        // ═══════════════════════════════════════════════════════════
+        console.log(`\n[GitHub API] 🏗️  Triggering Super-Architect Phase...`);
+        const blueprint = await generateArchitectBlueprint(foundFiles, contextFiles, projectName);
+
+        // Build the docs.json from the Architect's page plan
+        const docsJsonPath = path.join(targetDir, "docs.json");
+        let siteConfig = {};
+
+        // Non-Destructive Merge: preserve existing user branding
+        if (fs.existsSync(docsJsonPath)) {
+            try {
+                siteConfig = JSON.parse(fs.readFileSync(docsJsonPath, 'utf8'));
+                console.log(`[GitHub API] Found existing config. Preserving user branding.`);
+            } catch (e) {
+                console.log(`[GitHub API] Failed to parse existing config, creating fresh.`);
+            }
+        } else {
+            console.log(`[GitHub API] Creating fresh docs.json template.`);
+            siteConfig = {
+                "$schema": "https://mintlify.com/docs.json",
+                "name": blueprint.projectName || projectName.charAt(0).toUpperCase() + projectName.slice(1),
+                "logo": { "light": "/logo/light.svg", "dark": "/logo/dark.svg" },
+                "theme": "mint",
+                "colors": { "primary": "#3b82f6", "light": "#ffffff", "dark": "#000000" }
+            };
+        }
+
+        // Convert the Architect's page plan into Mintlify navigation format
+        const groupMap = {};
+        for (const page of blueprint.pages) {
+            if (!groupMap[page.group]) groupMap[page.group] = [];
+            groupMap[page.group].push(page.slug);
+        }
+        siteConfig.navigation = Object.entries(groupMap).map(([group, pages]) => ({
+            group,
+            pages
+        }));
+
+        fs.writeFileSync(docsJsonPath, JSON.stringify(siteConfig, null, 2));
+        console.log(`[GitHub API] ✅ Architect Blueprint saved with ${blueprint.pages.length} pages.`);
+
+        // ═══════════════════════════════════════════════════════════
+        // PHASE 2: GHOSTWRITER — Write each page from the plan
+        // ═══════════════════════════════════════════════════════════
         let generatedCount = 0;
 
-        for (const file of foundFiles) {
-            await new Promise(resolve => setTimeout(resolve, 4000));
-            const markdownOutput = await generateDocs(file, codeMap);
+        for (const pagePlan of blueprint.pages) {
+            await new Promise(resolve => setTimeout(resolve, 3000)); // Rate limiting
+
+            const markdownOutput = await generatePage(pagePlan, foundFiles, contextFiles, blueprint);
 
             if (markdownOutput) {
-                const relativePath = path.relative(downloadedFolderPath, file.path);
-                const parsedPath = path.parse(relativePath);
-                const nestedTargetDir = path.join(targetDir, parsedPath.dir);
-                
-                if (!fs.existsSync(nestedTargetDir)) {
-                    fs.mkdirSync(nestedTargetDir, { recursive: true });
-                }
-
-                const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
+                const mdFilePath = path.join(targetDir, `${pagePlan.slug}.mdx`);
                 fs.writeFileSync(mdFilePath, markdownOutput);
-                console.log(`Saved AI Doc: ${mdFilePath}`);
+                console.log(`📄 Saved: ${pagePlan.title} → ${mdFilePath}`);
                 generatedCount++;
             }
         }
@@ -540,7 +610,7 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         });
 
         const buildScriptPath = path.join(__dirname, "../build/build.js");
-        const buildProcess = spawn("node", [buildScriptPath]);
+        const buildProcess = spawn("node", [buildScriptPath, "--scope", `${tenantName}/${projectName}`]);
 
         buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
         buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
@@ -563,7 +633,7 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
             }
         });
 
-    } catch (error) {
+    } catch (error) { 
         console.error("GitHub API Error", error);
         await supabase
             .from('projects')
@@ -574,6 +644,66 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         if (!res.headersSent) {
             res.status(500).json({ error: "Failed to process the GitHub repository." });
         }
+    }
+});
+
+// --- NEW: Two-Way GitHub Sync Route ---
+app.post("/api/github/save-config", csrfProtection, requireAuth, async (req, res) => {
+    // We expect the frontend to pass the config object and the user's GitHub provider token
+    const { tenant, version, configData, githubToken } = req.body;
+
+    if (!tenant || !version || !configData || !githubToken) {
+        return res.status(400).json({ error: "Missing required sync data." });
+    }
+
+    try {
+        console.log(`\n☁️ [GitHub Sync] Pushing docs.json to ${tenant}/${version}...`);
+
+        // 1. Convert the JSON config into a Base64 string (GitHub API requires Base64)
+        const contentEncoded = Buffer.from(JSON.stringify(configData, null, 2)).toString("base64");
+        const path = "docs.json";
+        const repoUrl = `https://api.github.com/repos/${tenant}/${version}/contents/${path}`;
+
+        const headers = {
+            "Authorization": `Bearer ${githubToken}`,
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "DocGen-Platform"
+        };
+
+        // 2. Fetch the existing file first to get its 'sha' (GitHub requires this to update an existing file)
+        let sha = null;
+        const getFileRes = await fetch(repoUrl, { headers });
+        if (getFileRes.ok) {
+            const fileData = await getFileRes.json();
+            sha = fileData.sha;
+        }
+
+        // 3. Commit the file directly to the repository
+        const commitBody = {
+            message: "Update docs.json configuration via Dashboard",
+            content: contentEncoded,
+        };
+        
+        // If the file already existed, attach the sha to overwrite it
+        if (sha) commitBody.sha = sha;
+
+        const putRes = await fetch(repoUrl, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify(commitBody)
+        });
+
+        if (!putRes.ok) {
+            const errData = await putRes.json();
+            throw new Error(errData.message || "Failed to push to GitHub");
+        }
+
+        console.log(`✅ [GitHub Sync] Successfully committed docs.json!`);
+        res.json({ message: "Successfully synced to GitHub!" });
+
+    } catch (error) {
+        console.error("❌ GitHub Sync Error:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -615,13 +745,16 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
         updatedAt: new Date().toISOString()
     };
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
     res.json({ message: 'Settings saved. Rebuilding site in background...' });
 
-    // Wake up the worker to rebuild the sidebar!
+    // --- UPDATED: Pass the --scope argument to the worker! ---
     const buildScriptPath = path.join(__dirname, '../build/build.js');
-    const buildProcess = spawn("node", [buildScriptPath]);
+    const targetScope = `${tenant}/${version}`;
+    
+    console.log(`[Settings] Waking up worker for specific scope: ${targetScope}`);
+    const buildProcess = spawn("node", [buildScriptPath, "--scope", targetScope]);
     
     buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
     buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
@@ -824,7 +957,52 @@ app.use((err, req, res, next) => {
     next(err);
 });
 
+// --- .WELL-KNOWN SKILL ROUTES (Public, for AI Agents) ---
+app.get('/.well-known/skills/index.json', (req, res) => {
+    res.json(getSkillIndex());
+});
+
+const handleSkillRequest = (req, res) => {
+    const skillPath = path.resolve(__dirname, '..', '.well-known', 'skills', 'default', 'skill.md');
+    if (fs.existsSync(skillPath)) {
+        res.type('text/markdown').sendFile(skillPath);
+    } else {
+        // Generate on-the-fly if missing
+        generateSkill();
+        if (fs.existsSync(skillPath)) {
+            res.type('text/markdown').sendFile(skillPath);
+        } else {
+            res.status(404).json({ error: 'skill.md not found' });
+        }
+    }
+};
+
+app.get('/.well-known/skills/default/skill.md', handleSkillRequest);
+app.get('/skill.md', handleSkillRequest);
+
+app.get('/llms.txt', (req, res) => {
+    const llmsPath = path.resolve(__dirname, '..', '.well-known', 'llms.txt');
+    if (fs.existsSync(llmsPath)) {
+        res.type('text/plain').sendFile(llmsPath);
+    } else {
+        generateSkill();
+        if (fs.existsSync(llmsPath)) {
+            res.type('text/plain').sendFile(llmsPath);
+        } else {
+            res.status(404).json({ error: 'llms.txt not found' });
+        }
+    }
+});
+
 const PORT = 4000;
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+
+    // Auto-regenerate skill.md on every server start
+    try {
+        generateSkill();
+        console.log('[Skill] skill.md auto-generated successfully on startup.');
+    } catch (err) {
+        console.error('[Skill] Failed to auto-generate skill.md:', err.message);
+    }
 });

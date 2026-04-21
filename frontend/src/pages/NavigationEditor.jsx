@@ -18,12 +18,16 @@ export default function NavigationEditor() {
       .then(({ data }) => setProject(data));
   }, [id]);
 
-  // 2. Fetch the existing navigation array from the built mint.json
+  // 2. Fetch the existing navigation array from the built docs.json
   useEffect(() => {
     if (!project) return;
     
     const API_URL = import.meta.env.VITE_API_URL;
-    fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/mint.json`, { cache: "no-store" })
+    fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/docs.json`, { cache: "no-store" })
+      .then(res => {
+        if (res.ok) return res;
+        return fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/mint.json`, { cache: "no-store" });
+      })
       .then(res => res.ok ? res.json() : null)
       .then(config => {
          if (config?.navigation && Array.isArray(config.navigation)) {
@@ -60,22 +64,53 @@ export default function NavigationEditor() {
     setNewCategory("");
   };
 
-  // --- SAVE TO BACKEND ---
+  // --- SAVE TO BACKEND & SYNC TO GITHUB ---
   const saveNavigation = async () => {
     setSaving(true);
     try {
-      const res = await apiFetch('/api/settings', {
+      // 1. Save to your local Express backend
+      await apiFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tenant: project.tenant_name,
           version: project.project_name,
-          navigation: categories // Send the newly ordered array!
+          navigation: categories 
         })
       });
-      const data = await res.json();
-      alert(data.message || "Navigation saved! Rebuilding engine...");
+
+      // 2. Fetch the existing full config so we don't accidentally delete Theme settings
+      const API_URL = import.meta.env.VITE_API_URL;
+      let resConfig = await fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/docs.json`, { cache: "no-store" });
+      if (!resConfig.ok) {
+        resConfig = await fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/mint.json`, { cache: "no-store" });
+      }
+      const currentConfig = resConfig.ok ? await resConfig.json() : {};
+
+      // 3. Merge the existing config with our new navigation array
+      const updatedConfig = { ...currentConfig, navigation: categories };
+
+      // 4. Grab the GitHub access token from the Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      const githubToken = session?.provider_token;
+
+      // 5. If the user logged in with GitHub, push the commit!
+      if (githubToken) {
+        await apiFetch('/api/github/save-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenant: project.tenant_name,
+            version: project.project_name,
+            configData: updatedConfig,
+            githubToken
+          })
+        });
+      }
+
+      alert("Navigation saved and synced to GitHub! Rebuilding engine...");
     } catch (error) {
+      console.error(error);
       alert("Failed to save navigation.");
     } finally {
       setSaving(false);

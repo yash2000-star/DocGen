@@ -34,21 +34,12 @@ export default function DocPage({ customTenant, customVersion }) {
   // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
   const tenant = customTenant || params.tenant;
   const version = customVersion || params.version;
+  
+  // NEW: Read the wildcard/splat parameter to determine which file to fetch.
+  // If no path is provided (e.g., they just visited /docs/tenant/v1), default to 'index'
+  const currentRoute = params["*"] || "index";
 
   const [MdxContent, setMdxContent] = useState(() => () => <h2>Loading document...</h2>);
-  const [currentRoute, setCurrentRoute] = useState("index"); // Default to index.mdx
-
-  // Listen for sidebar clicks to change the current document
-  useEffect(() => {
-    function handleDocChange(event) {
-      const route = event.detail;
-      if (!route)   return;
-      setCurrentRoute(route);
-    }
-
-    window.addEventListener("doc-change", handleDocChange);
-    return () => window.removeEventListener("doc-change", handleDocChange);
-  }, []);
 
   // The Dynamic Fetch Engine
   useEffect(() => {
@@ -57,9 +48,9 @@ export default function DocPage({ customTenant, customVersion }) {
 
     setMdxContent(() => () => <h2>Loading...</h2>);
 
-    // Fetch the raw MDX from your Node.js backend
+    // Fetch the raw MDX from your new Node.js dynamic route
     const API_URL = import.meta.env.VITE_API_URL;
-    fetch(`${API_URL}/api/static/${tenant}/${version}/${currentRoute}.mdx`)
+    fetch(`${API_URL}/api/docs/${tenant}/${version}/${currentRoute}`)
       .then((res) => {
         if (!res.ok) throw new Error("Document not found");
         return res.text();
@@ -98,16 +89,44 @@ export default function DocPage({ customTenant, customVersion }) {
     ResponseField, Expandable, Frame, CodeGroup, table: Table, th: Th, 
     td: Td, Check, Update, Tooltip, RequestExample, ResponseExample, ApiPlayground, CodeGenerator,
     
-    h1: ({ children, ...props }) => <h1 id={slugify(children)} style={{ marginTop: '40px', scrollMarginTop: '80px' }} {...props}>{children}</h1>,
-    h2: ({ children, ...props }) => <h2 id={slugify(children)} style={{ marginTop: '40px', scrollMarginTop: '80px', borderBottom: '1px solid #e2e8f0', paddingBottom: '8px' }} {...props}>{children}</h2>,
-    h3: ({ children, ...props }) => <h3 id={slugify(children)} style={{ marginTop: '32px', scrollMarginTop: '80px' }} {...props}>{children}</h3>,
-    h4: ({ children, ...props }) => <h4 id={slugify(children)} style={{ marginTop: '24px', scrollMarginTop: '80px' }} {...props}>{children}</h4>,
+    // Fallbacks for lower-case tags
+    note: Note, warning: Warning, info: Info, tip: Tip, danger: Danger, card: Card,
+    tabs: Tabs, tab: Tab, expandable: Expandable, frame: Frame,
+    
+    // Standard markdown elements
+    pre: ({ children, ...rest }) => {
+      // When MDX compiles ```code```, it produces <pre><code className="language-xxx">...</code></pre>
+      // With our components map, child.type is the mapped code function, NOT the string 'code'.
+      // So we check child.props instead.
+      if (children?.props) {
+        const className = children.props.className || '';
+        const language = className.replace(/language-/, '') || 'text';
+        const code = children.props.children;
+        if (typeof code === 'string') {
+          return <CodeBlock language={language}>{code}</CodeBlock>;
+        }
+      }
+      return <pre className="p-4 bg-slate-900 rounded-xl my-4 overflow-x-auto text-sm" {...rest}>{children}</pre>;
+    },
+    code: (props) => <code className="bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-1.5 py-0.5 rounded-md text-[13px] font-mono border border-slate-200 dark:border-slate-700" {...props} />,
+    
+    // Headings mapped with Tailwind
+    h1: ({ children, ...props }) => <h1 id={slugify(children)} className="text-3xl font-bold mt-10 mb-4 text-slate-900 dark:text-slate-100 scroll-mt-20 block" {...props}>{children}</h1>,
+    h2: ({ children, ...props }) => <h2 id={slugify(children)} className="text-2xl font-semibold mt-10 mb-4 pb-2 border-b border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 scroll-mt-20 block" {...props}>{children}</h2>,
+    h3: ({ children, ...props }) => <h3 id={slugify(children)} className="text-xl font-medium mt-8 mb-3 text-slate-900 dark:text-slate-100 scroll-mt-20 block" {...props}>{children}</h3>,
+    h4: ({ children, ...props }) => <h4 id={slugify(children)} className="text-lg font-medium mt-6 mb-2 text-slate-900 dark:text-slate-100 scroll-mt-20 block" {...props}>{children}</h4>,
+    p: (props) => <p className="text-slate-700 dark:text-slate-300 leading-7 mb-4" {...props} />,
+    ul: (props) => <ul className="list-disc pl-6 mb-4 text-slate-700 dark:text-slate-300 space-y-2" {...props} />,
+    ol: (props) => <ol className="list-decimal pl-6 mb-4 text-slate-700 dark:text-slate-300 space-y-2" {...props} />,
+    a: (props) => <a className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 underline underline-offset-2 decoration-blue-500/30 hover:decoration-blue-500/100 transition-colors" {...props} />
   };
 
   return (
     <div className="mdx-content">
       <Breadcrumbs path={currentRoute} />
-      <MdxContent components={mdxComponents} />
+      <div className="pb-24">
+        <MdxContent components={mdxComponents} />
+      </div>
     </div>
   );
 }

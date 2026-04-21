@@ -10,7 +10,7 @@ export default function DashboardLayout() {
       <DashboardSidebar /> 
       
       {/* 2. Right column holds the Navbar and the scrolling content */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", backgroundColor: "#ffffff" }}>
         
         <Navbar />
         

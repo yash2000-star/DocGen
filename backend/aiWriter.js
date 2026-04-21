@@ -1,125 +1,288 @@
 require("dotenv").config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai");
 const editDocs = require("./aiEditor");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+// Google Gen AI SDK for Vertex requires region and project parameters.
+// We lazily instantiate the client so it doesn't crash the server on boot if ADC is missing.
+let clientInstance = null;
+function getVertexClient() {
+    if (!clientInstance) {
+        clientInstance = new GoogleGenAI({
+            vertexai: {
+                project: process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || "my-gcp-project",
+                location: process.env.CLOUD_ML_REGION || process.env.GOOGLE_CLOUD_REGION || "us-east5"
+            }
+        });
+    }
+    return clientInstance;
+}
 
-async function generateDocs(file, codeMap) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 1: THE SUPER-ARCHITECT
+// Analyzes the ENTIRE codebase and generates a conceptual multi-page site plan.
+// This is the brain — it decides what pages to create, not just group files.
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    const codeMapString = codeMap ? JSON.stringify(codeMap, null, 2) : "Structure not available";
+async function generateArchitectBlueprint(codeFiles, contextFiles, projectName) {
 
-    const prompt = `You are an elite Senior Technical Writer at a top-tier SaaS company like Stripe or Vercel.
-Your ONLY job is to read source code and produce MDX documentation that uses our EXACT component library.
-You must produce rich, beautiful, interactive documentation — not flat markdown. Use components generously and correctly.
+    // Build a comprehensive source digest for the AI
+    let sourceDigest = "";
 
----
-## REQUIRED FRONTMATTER (CRITICAL)
-You MUST start every single document with a YAML frontmatter block. 
-This is used by our build engine to construct the navigation sidebar. Do not skip this.
+    // Priority 1: README (the human-written project description)
+    const readme = contextFiles.find(f => f.type === "readme");
+    if (readme) {
+        sourceDigest += `\n### README.md\n${readme.code}\n`;
+    }
 
-Format EXACTLY like this at the very top of your response:
----
-title: "Human Readable Title"
-group: "Category Name"
-order: 10
----
+    // Priority 2: package.json (dependencies, scripts, project metadata)
+    const pkg = contextFiles.find(f => f.type === "package");
+    if (pkg) {
+        sourceDigest += `\n### package.json\n${pkg.code}\n`;
+    }
 
-Rules for Frontmatter:
-1. 'title': A clean, professional, human-readable name for the file (e.g., "Authentication Controller" instead of "auth.js").
-2. 'group': Categorize the file into ONE of these exact buckets (choose the best fit):
-   - "Getting Started" (for index.js, app.js, config, setup files)
-   - "Core Architecture" (for database connections, server setups)
-   - "API Reference" (for routes, endpoints, controllers)
-   - "Models & Data" (for database schemas, typescript types)
-   - "Components" (for UI components)
-   - "Utilities & Helpers" (for middleware, helper functions, shared logic)
-   - "Miscellaneous" (only if absolutely nothing else fits)
-3. 'order': Provide an integer to sort it. (e.g., 1-5 for Getting Started, 10-30 for Core/API, 80-100 for Utils).
+    // Priority 3: All code files (with paths for structure understanding)
+    for (const file of codeFiles) {
+        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+        sourceDigest += `\n### ${shortPath}\n\`\`\`\n${file.code.substring(0, 8000)}\n\`\`\`\n`;
+    }
 
----
-## YOUR MDX COMPONENT CONTRACT
+    // Priority 4: HTML files (for frontend-heavy projects)
+    const htmlFiles = contextFiles.filter(f => f.type === "html");
+    for (const file of htmlFiles) {
+        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+        sourceDigest += `\n### ${shortPath}\n\`\`\`html\n${file.code.substring(0, 5000)}\n\`\`\`\n`;
+    }
 
-You have access to EXACTLY these components. Use ONLY these. Never invent new component names.
+    // Priority 5: CSS files
+    const cssFiles = contextFiles.filter(f => f.type === "style");
+    for (const file of cssFiles) {
+        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+        sourceDigest += `\n### ${shortPath}\n\`\`\`css\n${file.code.substring(0, 3000)}\n\`\`\`\n`;
+    }
 
----
+    const prompt = `You are the Documentation Architect at Mintlify. You design documentation sites that feel like they were written by a real human technical writer — not auto-generated.
 
-### CALLOUT COMPONENTS
-Use these instead of plain blockquotes ALWAYS.
+## YOUR MISSION
+Analyze this entire codebase and design a complete, multi-page documentation site plan. You are NOT mapping one file to one page. You are designing a documentation EXPERIENCE.
 
-#### <Note>
-Use for: helpful tips, extra context, best practices, non-critical information.
-\`\`\`mdx
-<Note>
-  Your helpful tip or extra context goes here.
-</Note>
-\`\`\`
+## HOW MINTLIFY THINKS
+Mintlify generates conceptual pages, not file dumps. For example, from a simple weather app with 3 files (index.html, script.js, style.css), Mintlify creates:
+- "Introduction" — welcoming overview with feature cards
+- "Quickstart" — get running in 2 minutes
+- "Setup" — environment & dependencies  
+- "Getting an API key" — external knowledge about APIs used
+- "Customization" — how to modify the app
+- "Weather data" — API/data reference
+- "UI components" — DOM element reference
 
-#### <Tip>
-Use for: pro tips, shortcuts, recommended approaches, positive suggestions.
-\`\`\`mdx
-<Tip>
-  A positive suggestion or pro tip that helps the developer.
-</Tip>
-\`\`\`
+Notice: Most pages DON'T map 1:1 to a source file. They are synthesized from the ENTIRE codebase.
 
-#### <Info>
-Use for: neutral informational callouts, version info, context that is important but not dangerous.
-\`\`\`mdx
-<Info>
-  Neutral information the developer should be aware of.
-</Info>
-\`\`\`
+## RULES FOR PAGE DESIGN
 
-#### <Warning>
-Use for: destructive actions, irreversible operations, security risks, API key exposure, data loss.
-\`\`\`mdx
-<Warning>
-  Your critical warning here. Be direct and specific about the risk.
-</Warning>
-\`\`\`
+1. ALWAYS create an "introduction" page — a warm, professional overview of the entire project.
+2. ALWAYS create a "quickstart" page — the fastest path to seeing results (clone, install, run).
+3. Create GUIDE pages for important topics the user needs to understand (setup, config, API keys, customization, deployment).
+4. Create REFERENCE pages for technical deep-dives (API routes, data models, components, utilities).
+5. Each page must have a clear, singular purpose. Never dump everything on one page.
+6. Use human-readable titles, NOT filenames. "Task Management API" not "index.js".
+7. Aim for 5-10 pages total. Quality over quantity.
+8. Group pages into exactly 3 sidebar categories:
+   - "Get Started" — Introduction, Quickstart (onboarding)
+   - "Guides" — Task-oriented how-to pages (setup, config, customization)
+   - "Reference" — Technical deep-dives (API, data models, components)
 
-#### <Danger>
-Use for: CRITICAL failures, breaking changes, actions that cannot be undone, production risk.
-Stronger than Warning. Use sparingly — only for the most severe risks.
-\`\`\`mdx
-<Danger>
-  This action is irreversible. Proceeding will permanently delete all data.
-</Danger>
-\`\`\`
+## OUTPUT FORMAT
+Output ONLY valid JSON matching this exact structure. No markdown fences. No explanation.
 
-#### <Callout>
-Use for: generic custom callouts when none of the above fit perfectly.
-\`\`\`mdx
-<Callout type="info" title="Custom Title">
-  Your custom callout message here.
-</Callout>
-\`\`\`
+{
+  "projectName": "Human Readable Project Name",
+  "projectDescription": "One sentence describing what this project does.",
+  "pages": [
+    {
+      "slug": "introduction",
+      "title": "Introduction",
+      "group": "Get Started",
+      "type": "synthetic",
+      "purpose": "Explain what this project does at a high level",
+      "sourceContext": "all",
+      "writingInstructions": "Write a warm overview. Use CardGroup to highlight key features. Link to Quickstart."
+    },
+    {
+      "slug": "quickstart",
+      "title": "Quickstart",
+      "group": "Get Started",
+      "type": "synthetic",
+      "purpose": "Get the user from zero to running in under 2 minutes",
+      "sourceContext": "package.json, README, entry file",
+      "writingInstructions": "Use Steps component. Show exact terminal commands. End with a Check callout."
+    }
+  ]
+}
 
-#### <Check>
-Use for: success states, completed steps, confirmed working configurations.
-\`\`\`mdx
-<Check>
-  Your environment is correctly configured.
-</Check>
-\`\`\`
+## IMPORTANT RULES FOR THE JSON
+- "slug" must be a URL-safe string (lowercase, hyphens, no spaces)
+- "type" is either "synthetic" (conceptual page) or "reference" (maps to specific code)
+- "sourceContext" tells the Ghostwriter which files to focus on. Use "all" for overview pages.
+- "writingInstructions" gives the Ghostwriter specific guidance for this page's style and components.
+- Every page MUST have writingInstructions. Be specific about which MDX components to use.
 
----
+## THE CODEBASE TO ANALYZE
 
-### STEP COMPONENTS
-Use for ANY sequential process. NEVER use plain numbered lists for procedures.
+Project: ${projectName}
+${sourceDigest}
 
-#### <Steps> + <Step>
+OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
+
+    try {
+        console.log(`\n🏛️  Super-Architect is designing the documentation site plan...`);
+        const response = await getVertexClient().models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: {
+                maxOutputTokens: 8192,
+                temperature: 0.4
+            }
+        });
+        let rawText = response.text.trim();
+
+        // Strip markdown backticks if AI hallucinates them
+        if (rawText.startsWith('```json')) {
+            rawText = rawText.replace(/^```json/, '').replace(/```$/, '').trim();
+        } else if (rawText.startsWith('```')) {
+            rawText = rawText.replace(/^```/, '').replace(/```$/, '').trim();
+        }
+
+        const blueprint = JSON.parse(rawText);
+
+        // Validate the structure
+        if (!blueprint.pages || !Array.isArray(blueprint.pages)) {
+            throw new Error("Blueprint missing 'pages' array");
+        }
+
+        console.log(`✅ Architect designed ${blueprint.pages.length} pages across the site.`);
+        blueprint.pages.forEach(p => console.log(`   📄 [${p.group}] ${p.title} (${p.type})`));
+
+        return blueprint;
+    } catch (error) {
+        console.error("❌ Super-Architect failed:", error);
+        // Fallback: generate a minimal 2-page plan
+        return {
+            projectName: projectName,
+            projectDescription: `Documentation for ${projectName}`,
+            pages: [
+                {
+                    slug: "introduction",
+                    title: "Introduction",
+                    group: "Get Started",
+                    type: "synthetic",
+                    purpose: "Project overview",
+                    sourceContext: "all",
+                    writingInstructions: "Write a professional overview of the project."
+                },
+                {
+                    slug: "quickstart",
+                    title: "Quickstart",
+                    group: "Get Started",
+                    type: "synthetic",
+                    purpose: "Get started quickly",
+                    sourceContext: "all",
+                    writingInstructions: "Write a step-by-step guide to run the project."
+                }
+            ]
+        };
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 2: THE CONTEXT-AWARE GHOSTWRITER
+// Writes individual pages using the Architect's plan + full codebase context.
+// Each page is written differently based on its type and purpose.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint) {
+
+    // Build the source context based on what the Architect requested
+    let relevantSource = "";
+
+    if (pagePlan.sourceContext === "all") {
+        // Overview pages get everything (truncated)
+        const readme = allContextFiles.find(f => f.type === "readme");
+        if (readme) relevantSource += `### README.md\n${readme.code}\n\n`;
+
+        const pkg = allContextFiles.find(f => f.type === "package");
+        if (pkg) relevantSource += `### package.json\n${pkg.code}\n\n`;
+
+        for (const file of allCodeFiles) {
+            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
+        }
+
+        for (const file of allContextFiles.filter(f => f.type === "html" || f.type === "style")) {
+            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 3000)}\n\`\`\`\n\n`;
+        }
+    } else {
+        // Specific pages get targeted files
+        const targetNames = pagePlan.sourceContext.split(",").map(s => s.trim().toLowerCase());
+
+        for (const file of [...allCodeFiles, ...allContextFiles]) {
+            const fileName = file.path.split(/[/\\]/).pop().toLowerCase();
+            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+            if (targetNames.some(t => fileName.includes(t) || shortPath.toLowerCase().includes(t))) {
+                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 6000)}\n\`\`\`\n\n`;
+            }
+        }
+
+        // If no specific files matched, provide everything as fallback
+        if (!relevantSource) {
+            for (const file of allCodeFiles) {
+                const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
+                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
+            }
+        }
+    }
+
+    // Build the navigation context so pages can reference each other
+    const navContext = fullBlueprint.pages.map(p => `- [${p.title}](/${p.slug})`).join("\n");
+
+    const prompt = `You are an elite Technical Writer at Mintlify. You write documentation that feels like it was crafted by a real person — warm, professional, concise, and genuinely helpful. Your docs should feel like MongoDB's official docs or Stripe's API reference — premium and polished.
+
+## YOUR ASSIGNMENT
+Write the "${pagePlan.title}" page for the "${fullBlueprint.projectName}" documentation site.
+
+## PAGE DETAILS
+- **Title**: ${pagePlan.title}
+- **Slug**: ${pagePlan.slug}
+- **Category**: ${pagePlan.group}
+- **Purpose**: ${pagePlan.purpose}
+- **Page Type**: ${pagePlan.type}
+
+## ARCHITECT'S WRITING INSTRUCTIONS
+${pagePlan.writingInstructions}
+
+## THE FULL SITE MAP (so you can reference other pages)
+${navContext}
+
+## YOUR MDX COMPONENT TOOLKIT
+
+Use these components generously to make the documentation feel rich and interactive:
+
+### Callouts (use instead of plain blockquotes — ALWAYS)
+- \`<Note>\` — helpful tips, extra context
+- \`<Tip>\` — pro tips, shortcuts, best practices
+- \`<Info>\` — neutral important information
+- \`<Warning>\` — security risks, destructive actions
+- \`<Danger>\` — critical failures, breaking changes
+- \`<Check>\` — success confirmations, completed steps
+
+### Steps (use for ANY sequential process — NEVER plain numbered lists)
 \`\`\`mdx
 <Steps>
   <Step title="Install dependencies">
-    Run the install command in your terminal.
     \`\`\`bash
     npm install
     \`\`\`
-  </Step>
-  <Step title="Configure environment">
-    Copy the example env file and fill in your values.
   </Step>
   <Step title="Start the server">
     \`\`\`bash
@@ -129,45 +292,20 @@ Use for ANY sequential process. NEVER use plain numbered lists for procedures.
 </Steps>
 \`\`\`
 
----
-
-### CARD COMPONENTS
-Use for: feature lists, navigation sections, module overviews, grouped related items.
-
-#### <Card>
-\`\`\`mdx
-<Card title="Authentication" icon="🔐">
-  Handles JWT token generation and user session management.
-</Card>
-\`\`\`
-
-#### <CardGroup>
-Use to group multiple Cards in a responsive grid. Always wrap Cards in CardGroup.
+### Cards (use for feature highlights, navigation, module overviews)
 \`\`\`mdx
 <CardGroup cols={2}>
-  <Card title="Routes" icon="🛣️">
-    Defines all API endpoints for this module.
-  </Card>
-  <Card title="Models" icon="🗄️">
-    Database schema and data validation logic.
+  <Card title="Feature" icon="⚡">
+    Description of the feature.
   </Card>
 </CardGroup>
 \`\`\`
 
----
-
-### CODE COMPONENTS
-Use for: multi-language examples, showing the same operation in different languages/frameworks.
-
-#### <CodeGroup>
-Use when showing the same example in multiple languages. NEVER use separate code blocks for this.
+### Code (use CodeGroup for multi-language, always specify language)
 \`\`\`mdx
 <CodeGroup>
 \`\`\`javascript JavaScript
 const response = await fetch('/api/users');
-\`\`\`
-\`\`\`python Python
-response = requests.get('/api/users')
 \`\`\`
 \`\`\`bash cURL
 curl -X GET https://api.example.com/users
@@ -175,229 +313,94 @@ curl -X GET https://api.example.com/users
 </CodeGroup>
 \`\`\`
 
+### API Documentation
+- \`<ParamField name="email" type="string" required>\` — for function/API parameters
+- \`<ResponseField name="token" type="string">\` — for return values
+- \`<ApiPlayground method="POST" endpoint="/api/users" />\` — interactive API testing
+
+### Other Components
+- \`<AccordionGroup>\` + \`<Accordion title="Question">\` — for FAQs
+- \`<Badge>NEW</Badge>\` — inline labels
+- \`<Tooltip tip="explanation">term</Tooltip>\` — hover definitions
+
+## WRITING STYLE RULES (THIS IS CRITICAL)
+
+1. **Be concise.** Short paragraphs (2-3 sentences max). No fluff. No filler.
+2. **Be action-oriented.** "Clone the repository" not "You might want to consider cloning the repository."
+3. **Use components aggressively.** Every procedure → Steps. Every tip → Note/Tip. Every feature list → CardGroup.
+4. **Write for humans.** Imagine a developer at 11pm trying to get this working. Be clear, direct, and helpful.
+5. **Add real value.** Don't just describe what the code does — explain WHY and WHEN to use it.
+6. **Cross-reference.** Mention other pages in the site ("See the [Quickstart](/quickstart) guide to get started.")
+7. **Use external knowledge.** If the code uses an API (like OpenWeatherMap), explain how to get API keys, rate limits, etc.
+8. **No redundancy.** Never repeat the title in the first sentence. Start with substance.
+
+## REQUIRED FRONTMATTER FORMAT
+Start your output with EXACTLY this YAML frontmatter:
+---
+title: "${pagePlan.title}"
+group: "${pagePlan.group}"
+order: ${fullBlueprint.pages.indexOf(pagePlan) + 1}
 ---
 
-### ACCORDION COMPONENTS
-Use for: FAQ sections, collapsible details, optional deep-dive content, troubleshooting guides.
+## SOURCE CODE CONTEXT
+${relevantSource}
 
-#### <Accordion> + <AccordionGroup>
-\`\`\`mdx
-<AccordionGroup>
-  <Accordion title="Why does this function require authentication?">
-    This route modifies user data and requires a valid JWT token in the Authorization header.
-  </Accordion>
-  <Accordion title="What happens if the database connection fails?">
-    The function throws a 500 error and logs the failure to the console.
-  </Accordion>
-</AccordionGroup>
-\`\`\`
-
----
-
-### API DOCUMENTATION COMPONENTS
-Use these for documenting function parameters, API route inputs/outputs, and config options.
-
-#### <ApiPlayground>
-Use for: creating an interactive API testing module. ALWAYS place this directly under the heading of an API route or Express endpoint.
-\`\`\`mdx
-<ApiPlayground method="POST" endpoint="/api/v1/users" />
-\`\`\`
-
-#### <ParamField>
-Use for: function parameters, API request body fields, config object properties.
-\`\`\`mdx
-<ParamField name="email" type="string" required>
-  The user's email address. Must be a valid email format.
-</ParamField>
-
-<ParamField name="password" type="string" required>
-  Minimum 8 characters. Stored as a bcrypt hash.
-</ParamField>
-
-<ParamField name="role" type="string" default="user">
-  The user's role. Accepts: "user", "admin", "moderator".
-</ParamField>
-\`\`\`
-
-#### <ResponseField>
-Use for: API response object fields, return value documentation.
-\`\`\`mdx
-<ResponseField name="token" type="string">
-  A signed JWT token valid for 24 hours.
-</ResponseField>
-
-<ResponseField name="user" type="object">
-  The authenticated user object containing id, email, and role.
-</ResponseField>
-\`\`\`
-
-#### <Expandable>
-Use for: nested object fields inside ParamField or ResponseField.
-\`\`\`mdx
-<ParamField name="user" type="object">
-  <Expandable title="user properties">
-    <ParamField name="user.id" type="string">The unique user ID.</ParamField>
-    <ParamField name="user.email" type="string">The user's email.</ParamField>
-  </Expandable>
-</ParamField>
-\`\`\`
-
----
-
-### REQUEST / RESPONSE EXAMPLE COMPONENTS
-Use for: showing full API request and response pairs together.
-
-#### <RequestExample> + <ResponseExample>
-\`\`\`mdx
-<RequestExample>
-\`\`\`bash cURL
-curl -X POST https://api.example.com/auth/login \\
-  -H "Content-Type: application/json" \\
-  -d '{"email": "user@example.com", "password": "secret"}'
-\`\`\`
-</RequestExample>
-
-<ResponseExample>
-\`\`\`json 200 OK
-{
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "user": { "id": "123", "email": "user@example.com" }
-}
-\`\`\`
-</ResponseExample>
-\`\`\`
-
----
-
-### INLINE COMPONENTS
-
-#### <Badge>
-Use for: version tags, status labels, inline flags like NEW, DEPRECATED, BETA, REQUIRED.
-\`\`\`mdx
-<Badge>NEW</Badge>
-<Badge color="red">DEPRECATED</Badge>
-<Badge color="yellow">BETA</Badge>
-<Badge color="green">STABLE</Badge>
-\`\`\`
-
-#### <Tooltip>
-Use for: technical terms, acronyms, or concepts that need a hover definition.
-\`\`\`mdx
-<Tooltip tip="JSON Web Token — a signed authentication credential">JWT</Tooltip>
-\`\`\`
-
-#### <Frame>
-Use for: wrapping images, screenshots, or embedded content with a styled container.
-\`\`\`mdx
-<Frame caption="The authentication flow diagram">
-  ![Auth Flow](./images/auth-flow.png)
-</Frame>
-\`\`\`
-
-#### <Update>
-Use for: changelog entries, version history, recent changes sections.
-\`\`\`mdx
-<Update label="v2.1.0" description="Added OAuth2 support">
-  Users can now authenticate with Google and GitHub in addition to email/password.
-</Update>
-\`\`\`
-
----
-
-## STRICT RULES — NEVER BREAK THESE
-
-1. OUTPUT ONLY raw MDX starting exactly with the \`---\` YAML frontmatter. No preamble, no "Here is your documentation", no markdown fences around the entire output.
-2. NEVER use plain blockquotes (>) for callouts. ALWAYS use <Note>, <Tip>, <Info>, <Warning>, <Danger>, or <Check>.
-3. NEVER use plain numbered lists (1. 2. 3.) for step-by-step procedures. ALWAYS use <Steps> + <Step>.
-4. NEVER invent component names not listed in this contract.
-5. ALWAYS wrap code examples in fenced code blocks with the correct language tag.
-6. ALWAYS use <ParamField> for every function parameter — never describe params in plain prose.
-7. ALWAYS use <CodeGroup> when showing the same operation in more than one language.
-8. ALWAYS use <CardGroup> to wrap multiple <Card> components.
-9. ALWAYS use <Warning> or <Danger> for any security-sensitive operation (passwords, tokens, API keys, env vars).
-10. Standard markdown (# headings, **bold**, _italic_, tables) is allowed alongside components.
-
----
-
-## DOCUMENT STRUCTURE TO FOLLOW
-
-# [Title: What this file/module does]
-
-One paragraph overview of the file's purpose and responsibility.
-
-## Overview
-
-2-3 sentences explaining what this module does and where it fits in the system.
-Use a <CardGroup> here if this file has multiple distinct responsibilities.
-
-## [Setup / Installation] (only if this file requires setup steps)
-
-<Steps>
-  <Step title="...">...</Step>
-</Steps>
-
-## Parameters / Configuration (if this file exports a function or accepts config)
-
-Document every parameter with <ParamField>.
-
-## [Functions / Routes / Classes] (one ## section per major export, route, or method)
-
-For each one:
-- One sentence description
-- <ApiPlayground method="..." endpoint="..." /> (ONLY if this is an API route)
-- <ParamField> for every input
-- <ResponseField> for every return value
-- <Warning> or <Danger> if there is any security or data risk
-- A code example in a fenced block or <CodeGroup>
-
-## Usage Example
-
-A real, working code example showing how to use this file/module.
-Use <CodeGroup> if showing multiple languages.
-
-## Common Errors / Troubleshooting (if applicable)
-
-Use <AccordionGroup> + <Accordion> for each common error.
-
----
-
-## GLOBAL REPOSITORY ARCHITECTURE
-
-You are documenting a single file. Here is the overall project structure so you understand how this file fits into the bigger picture:
-
-\`\`\`json
-${codeMapString}
-\`\`\`
-
-Use this context to explain relationships. If this is a controller, name the route that calls it. If it's a model, name the files that import it. If it's middleware, explain where in the request chain it sits.
-
----
-
-## FILE TO DOCUMENT
-
-File path: ${file.path}
-
-Source code:
-\`\`\`javascript
-${file.code}
-\`\`\``;
+## OUTPUT RULES
+1. Output ONLY raw MDX starting with the --- frontmatter. No preamble. No wrapper fences.
+2. Never invent component names not in the toolkit above.
+3. Every code block must have a language tag.
+4. The document should feel like a premium, hand-crafted page — not an AI dump.`;
 
     try {
-        console.log(`\n✍️  Ghostwriter is reading: ${file.path}...`);
+        console.log(`\n✍️  Ghostwriter is crafting: "${pagePlan.title}" [${pagePlan.type}]...`);
 
-        const result = await model.generateContent(prompt);
-        const draftText = result.response.text();
+        const response = await getVertexClient().models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: prompt,
+            config: {
+                maxOutputTokens: 8192,
+                temperature: 0.5
+            }
+        });
+        const draftText = response.text;
 
-        console.log(`✅ Ghostwriter generated the draft. Passing to Critic...`);
-        
-        // --- NEW: Pass BOTH the draft and the original source code! ---
-        const finalPolishedText = await editDocs(draftText, file.code);
+        console.log(`✅ Ghostwriter drafted "${pagePlan.title}". Passing to Critic...`);
+
+        // Pass to the editor for cleanup and validation
+        const sourceCode = allCodeFiles.map(f => f.code).join("\n\n---\n\n").substring(0, 15000);
+        const finalPolishedText = await editDocs(draftText, sourceCode);
 
         return finalPolishedText;
     } catch (error) {
-        console.error("❌ Ghostwriter failed:", error);
+        console.error(`❌ Ghostwriter failed on "${pagePlan.title}":`, error);
         return null;
     }
 }
 
-module.exports = generateDocs;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEGACY EXPORTS (kept for backward compatibility)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The old generateDocs function is preserved as a fallback
+async function generateDocs(file, codeMap, blueprint) {
+    // Wrap the old single-file call into the new page-based system
+    const pagePlan = {
+        slug: file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, ''),
+        title: file.path.split(/[/\\]/).pop(),
+        group: "Reference",
+        type: "reference",
+        purpose: `Document the ${file.path.split(/[/\\]/).pop()} file`,
+        sourceContext: "all",
+        writingInstructions: "Write a detailed reference page for this source file."
+    };
+
+    const dummyBlueprint = {
+        projectName: "Project",
+        pages: [pagePlan]
+    };
+
+    return await generatePage(pagePlan, [file], [], dummyBlueprint);
+}
+
+module.exports = { generateDocs, generatePage, generateArchitectBlueprint };

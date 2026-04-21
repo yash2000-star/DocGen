@@ -1,16 +1,19 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { supabase } from "../lib/auth";
-import Navbar from "../components/dashboard/Navbar";
 
 export default function Analytics() {
   const { id } = useParams();
   const [project, setProject] = useState(null);
-  const [usage, setUsage] = useState({ generations: 0, views: 1245, apiHits: 342 });
-  const [loading, setLoading] = useState(true);
+  
+  const [isLoading, setIsLoading] = useState(true);
+  const [views, setViews] = useState(0);
+  const [visitors, setVisitors] = useState(0);
 
   useEffect(() => {
     async function loadAnalytics() {
+      setIsLoading(true);
+      
       // 1. Get the project details
       const { data: projData } = await supabase
         .from('projects')
@@ -20,123 +23,81 @@ export default function Analytics() {
         
       if (projData) {
         setProject(projData);
-        
-        // 2. Fetch the real AI generation usage from the tracking table we saw in server.js
-        const month = new Date().toISOString().slice(0, 7);
-        const { data: usageData } = await supabase
-          .from('usage_tracking')
-          .select('generations')
-          .eq('user_id', projData.user_id)
-          .eq('month', month)
-          .single();
-
-        if (usageData) {
-          setUsage(prev => ({ ...prev, generations: usageData.generations }));
-        }
       }
-      setLoading(false);
+      
+      // 2. Fetch page views
+      const { data: viewData, error } = await supabase
+        .from('page_views')
+        .select('visitor_session_id')
+        .eq('project_id', id);
+        
+      if (viewData && !error) {
+        setViews(viewData.length);
+        const uniqueIds = new Set(viewData.map(v => v.visitor_session_id).filter(Boolean));
+        setVisitors(uniqueIds.size);
+      }
+      
+      setIsLoading(false);
     }
     
     loadAnalytics();
   }, [id]);
 
-  if (loading) return <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)" }}><Navbar /></div>;
-  if (!project) return <div style={{ padding: "40px" }}>Project not found.</div>;
-
-  // Calculate percentage for the progress bar (assuming Free plan limit is 20)
-  const limit = 20; 
-  const percentUsed = Math.min((usage.generations / limit) * 100, 100);
+  if (!project && !isLoading) return <div style={{ padding: "40px" }}>Project not found.</div>;
 
   return (
-    <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)", fontFamily: "system-ui, -apple-system, sans-serif", paddingBottom: "60px" }}>
-      <Navbar />
+    <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)", fontFamily: "Inter, system-ui, -apple-system, sans-serif", paddingBottom: "60px" }}>
       
       <div style={{ maxWidth: "1000px", margin: "40px auto", padding: "0 32px" }}>
         
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "32px" }}>
-          <div>
-            <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Analytics</h1>
-            <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>
-              Traffic and API usage for <strong style={{ color: "var(--text-heading)" }}>{project.project_name}</strong> over the last 30 days.
-            </p>
-          </div>
-          <select style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-heading)", outline: "none", cursor: "pointer" }}>
-            <option>Last 30 Days</option>
-            <option>Last 7 Days</option>
-            <option>All Time</option>
-          </select>
+        <div style={{ marginBottom: "32px" }}>
+          <h1 style={{ fontSize: "28px", fontWeight: "700", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Analytics</h1>
+          <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>
+            Traffic for <strong style={{ color: "var(--text-heading)" }}>{project?.project_name || "..."}</strong> over the selected period.
+          </p>
         </div>
 
-        {/* Top Stat Cards (Bento Grid) */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "24px", marginBottom: "24px" }}>
-          
-          {/* Card 1: Page Views */}
-          <div style={{ backgroundColor: "var(--bg-main)", padding: "24px", borderRadius: "12px", border: "1px solid var(--border-color)", boxShadow: "0 1px 2px 0 rgba(0,0,0,0.05)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-muted)", marginBottom: "16px", fontSize: "13px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-              Total Page Views
-            </div>
-            <div style={{ fontSize: "36px", fontWeight: "700", color: "var(--text-heading)", marginBottom: "8px" }}>{usage.views.toLocaleString()}</div>
-            <div style={{ fontSize: "13px", color: "#16a34a", display: "flex", alignItems: "center", gap: "4px", fontWeight: "500" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-              +14.2% from last month
-            </div>
+        {/* 1. Controls Row */}
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "24px" }}>
+          {/* Left side (Tabs) */}
+          <div style={{ backgroundColor: "#f8fafc", padding: "4px", borderRadius: "8px", display: "inline-flex", border: "1px solid #e2e8f0" }}>
+            <button style={{ backgroundColor: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", color: "#0f172a", borderRadius: "6px", padding: "4px 12px", fontSize: "13px", border: "none", fontWeight: "500", cursor: "pointer" }}>Humans</button>
+            <button style={{ backgroundColor: "transparent", color: "#64748b", padding: "4px 12px", fontSize: "13px", border: "none", fontWeight: "500", cursor: "pointer" }}>Agents</button>
           </div>
 
-          {/* Card 2: API Playground Hits */}
-          <div style={{ backgroundColor: "var(--bg-main)", padding: "24px", borderRadius: "12px", border: "1px solid var(--border-color)", boxShadow: "0 1px 2px 0 rgba(0,0,0,0.05)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-muted)", marginBottom: "16px", fontSize: "13px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-              API Tester Requests
-            </div>
-            <div style={{ fontSize: "36px", fontWeight: "700", color: "var(--text-heading)", marginBottom: "8px" }}>{usage.apiHits.toLocaleString()}</div>
-            <div style={{ fontSize: "13px", color: "#16a34a", display: "flex", alignItems: "center", gap: "4px", fontWeight: "500" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>
-              +5.8% from last month
-            </div>
-          </div>
-
-          {/* Card 3: AI Generation Usage (Real Data) */}
-          <div style={{ backgroundColor: "var(--bg-main)", padding: "24px", borderRadius: "12px", border: "1px solid var(--border-color)", boxShadow: "0 1px 2px 0 rgba(0,0,0,0.05)", display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--text-muted)", marginBottom: "16px", fontSize: "13px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-              AI Generations (Free Plan)
-            </div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: "4px", marginBottom: "16px" }}>
-              <span style={{ fontSize: "36px", fontWeight: "700", color: "var(--text-heading)" }}>{usage.generations}</span>
-              <span style={{ fontSize: "16px", color: "var(--text-muted)", fontWeight: "500" }}>/ {limit}</span>
-            </div>
-            
-            {/* Progress Bar */}
-            <div style={{ width: "100%", height: "8px", backgroundColor: "#f1f5f9", borderRadius: "4px", overflow: "hidden", marginTop: "auto" }}>
-              <div style={{ 
-                height: "100%", 
-                width: `${percentUsed}%`, 
-                backgroundColor: percentUsed > 90 ? "#ef4444" : percentUsed > 75 ? "#f59e0b" : "#3b82f6",
-                transition: "width 1s ease-out"
-              }}></div>
-            </div>
-          </div>
-
+          {/* Right side (Date Picker) */}
+          <button style={{ display: "flex", alignItems: "center", gap: "8px", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "6px 12px", fontSize: "13px", color: "#334155", backgroundColor: "#ffffff", cursor: "pointer", fontWeight: "500" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+            Mar 20 - 27
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
         </div>
 
-        {/* Fake Traffic Chart Area */}
-        <div style={{ backgroundColor: "var(--bg-main)", padding: "32px", borderRadius: "12px", border: "1px solid var(--border-color)", boxShadow: "0 1px 2px 0 rgba(0,0,0,0.05)" }}>
-          <h2 style={{ fontSize: "16px", fontWeight: "600", margin: "0 0 24px 0", color: "var(--text-heading)" }}>Traffic Overview</h2>
+        {/* 2. Top Stat Cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "16px", marginBottom: "24px" }}>
+          {[
+            { title: "Visitors", value: isLoading ? "..." : visitors },
+            { title: "Views", value: isLoading ? "..." : views },
+            { title: "Assistant", value: isLoading ? "..." : "0" },
+            { title: "Searches", value: isLoading ? "..." : "0" },
+            { title: "Feedback", value: isLoading ? "..." : "0" }
+          ].map((stat, idx) => (
+            <div key={idx} style={{ backgroundColor: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "20px" }}>
+              <div style={{ fontSize: "13px", color: "#64748b", fontWeight: "500", marginBottom: "12px" }}>{stat.title}</div>
+              <div style={{ fontSize: "32px", fontWeight: "700", color: "#0f172a", marginBottom: "4px" }}>{stat.value}</div>
+              <div style={{ fontSize: "14px", color: "#94a3b8" }}>-</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 3. Fake Traffic Chart Area */}
+        <div style={{ backgroundColor: "#ffffff", padding: "32px", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
+          <h4 style={{ fontSize: "15px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0" }}>Visitors Over Time</h4>
+          <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 24px 0" }}>Daily visitors count for the selected date range</p>
           
-          <div style={{ height: "250px", display: "flex", alignItems: "flex-end", gap: "12px", padding: "20px 0 0 0", borderBottom: "1px solid #e2e8f0", borderLeft: "1px solid #e2e8f0", position: "relative" }}>
-            {/* Generating some random CSS bars to look like a chart */}
-            {[40, 65, 45, 80, 55, 90, 70, 100, 85, 110, 95, 120, 105, 130].map((height, i) => (
-              <div key={i} style={{ flex: 1, backgroundColor: "#eff6ff", borderTopLeftRadius: "4px", borderTopRightRadius: "4px", height: `${(height / 130) * 100}%`, position: "relative", group: "chart-bar" }}>
-                 <div style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "4px", backgroundColor: "#3b82f6", borderTopLeftRadius: "4px", borderTopRightRadius: "4px" }}></div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: "12px", color: "var(--text-muted)", fontSize: "12px", fontWeight: "500" }}>
-            <span>Mar 1</span>
-            <span>Mar 15</span>
-            <span>Mar 30</span>
+          <div style={{ height: "250px", borderBottom: "1px solid #e2e8f0", display: "flex", gap: "12px", alignItems: "flex-end", marginTop: "40px" }}>
+            <div style={{ backgroundColor: "#10b981", borderRadius: "4px 4px 0 0", width: "48px", height: "250px" }}></div>
           </div>
         </div>
 

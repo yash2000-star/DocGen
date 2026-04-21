@@ -1,54 +1,87 @@
-/* --- GLOBAL SAAS VARIABLES (LIGHT MODE) --- */
-:root {
-  --bg-main: #ffffff;
-  --bg-sidebar: #f8fafc;
-  --text-main: #334155;
-  --text-heading: #0f172a;
-  --text-muted: #64748b;
-  --border-color: #e2e8f0;
-  --primary-brand: #3b82f6;
+@import "tailwindcss";
+
+/* Tailwind v4: Use class-based dark mode (body.dark) instead of prefers-color-scheme */
+@custom-variant dark (&:is(.dark, .dark *));
+
+/* Utility: hide scrollbar on tab containers */
+@utility hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
-/* --- DARK MODE VARIABLES --- */
-body.dark {
-  --bg-main: #0f172a;       /* Deep Slate background */
-  --bg-sidebar: #020617;    /* Even darker slate for the sidebar */
-  --text-main: #cbd5e1;     /* Soft gray text so it doesn't strain eyes */
-  --text-heading: #f8fafc;  /* Crisp white headings */
-  --text-muted: #64748b;    /* Dimmed gray */
-  --border-color: #334155;  /* Subtle dark borders */
-  --primary-brand: #60a5fa; /* A slightly lighter blue for dark backgrounds */
+/*
+ * All custom base styles MUST live inside @layer base so that
+ * Tailwind utilities (@layer utilities) can properly override them.
+ * 
+ * Previously, the `* { margin: 0; padding: 0; }` rule was un-layered,
+ * which means it beat ALL Tailwind utility classes (pl-8, my-6, px-4, etc.)
+ * causing components to render with zero spacing.
+ */
+@layer base {
+  /* --- GLOBAL SAAS VARIABLES (LIGHT MODE) --- */
+  :root {
+    --bg-main: #ffffff;
+    --bg-sidebar: #f8fafc;
+    --text-main: #334155;
+    --text-heading: #0f172a;
+    --text-muted: #64748b;
+    --border-color: #e2e8f0;
+    --primary-brand: #3b82f6;
+
+    /* Theme system tokens (set dynamically by applyTheme.js) */
+    --color-primary: #3b82f6;
+    --color-primary-light: #ffffff;
+    --color-primary-dark: #000000;
+    --background-image: none;
+    --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+
+    /* Preset tokens (set dynamically by themes.js) */
+    --theme-border-radius: 6px;
+    --theme-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    --theme-sidebar-style: flat;
+  }
+
+  /* --- DARK MODE VARIABLES --- */
+  body.dark {
+    --bg-main: #0f172a;
+    --bg-sidebar: #020617;
+    --text-main: #cbd5e1;
+    --text-heading: #f8fafc;
+    --text-muted: #64748b;
+    --border-color: #334155;
+    --primary-brand: #60a5fa;
+  }
+
+  /* --- BASE TYPOGRAPHY --- */
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    color: var(--text-main);
+    background-color: var(--bg-main);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* --- MDX CONTENT STYLING --- */
+  .mdx-content {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 40px;
+    font-size: 16px;
+  }
+
+  .mdx-content h1 { color: var(--text-heading); font-size: 32px; font-weight: 700; margin-bottom: 16px; letter-spacing: -0.02em; transition: color 0.3s ease; }
+  .mdx-content h2 { color: var(--text-heading); font-size: 24px; font-weight: 600; margin-top: 48px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); transition: color 0.3s ease, border-color 0.3s ease; }
+  .mdx-content h3 { color: var(--text-heading); font-size: 18px; font-weight: 600; margin-top: 32px; margin-bottom: 12px; transition: color 0.3s ease; }
+  .mdx-content p { margin-bottom: 16px; color: var(--text-main); transition: color 0.3s ease; }
+  .mdx-content a { color: var(--primary-brand); text-decoration: none; font-weight: 500; transition: color 0.3s ease; }
+  .mdx-content a:hover { text-decoration: underline; }
+  .mdx-content ul, .mdx-content ol { margin-bottom: 16px; padding-left: 24px; color: var(--text-main); transition: color 0.3s ease; }
+  .mdx-content li { margin-bottom: 8px; }
+
+  code { font-family: 'JetBrains Mono', monospace; }
 }
-
-/* --- BASE TYPOGRAPHY --- */
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  color: var(--text-main);
-  background-color: var(--bg-main);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  /* NEW: This makes the switch from Light to Dark smooth! */
-  transition: background-color 0.3s ease, color 0.3s ease;
-}
-
-/* --- MDX CONTENT STYLING --- */
-.mdx-content {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 40px;
-  font-size: 16px;
-}
-
-.mdx-content h1 { color: var(--text-heading); font-size: 32px; font-weight: 700; margin-bottom: 16px; letter-spacing: -0.02em; transition: color 0.3s ease; }
-.mdx-content h2 { color: var(--text-heading); font-size: 24px; font-weight: 600; margin-top: 48px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); transition: color 0.3s ease, border-color 0.3s ease; }
-.mdx-content h3 { color: var(--text-heading); font-size: 18px; font-weight: 600; margin-top: 32px; margin-bottom: 12px; transition: color 0.3s ease; }
-.mdx-content p { margin-bottom: 16px; color: var(--text-main); transition: color 0.3s ease; }
-.mdx-content a { color: var(--primary-brand); text-decoration: none; font-weight: 500; transition: color 0.3s ease; }
-.mdx-content a:hover { text-decoration: underline; }
-.mdx-content ul, .mdx-content ol { margin-bottom: 16px; padding-left: 24px; color: var(--text-main); transition: color 0.3s ease; }
-.mdx-content li { margin-bottom: 8px; }
-
-code { font-family: 'JetBrains Mono', monospace; }

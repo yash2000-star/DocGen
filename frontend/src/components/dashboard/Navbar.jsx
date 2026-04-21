@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { logout, supabase } from "../../lib/auth"; // <-- Make sure supabase is exported from your auth.js!
+import { logout, supabase } from "../../lib/auth"; 
+import CommandPalette from "./CommandPalette";
 
-// The 5 onboarding steps [cite: 279-285]
 const STEPS = [
   { key: 'imported_repo',       label: 'Import your first repository' },
   { key: 'viewed_docs',         label: 'View your generated docs' },
@@ -15,12 +15,10 @@ const STEPS = [
 export default function Navbar() {
   const { user } = useAuth();
   
-  // Onboarding State
   const [onboarding, setOnboarding] = useState(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
-  // 1. Fetch the user's onboarding progress on mount
   useEffect(() => {
     if (!user) return;
 
@@ -31,7 +29,6 @@ export default function Navbar() {
         .eq('user_id', user.id)
         .single();
 
-      // If they don't have a row yet, let's create one silently
       if (!data && error?.code === 'PGRST116') {
         const { data: newData } = await supabase
           .from('user_onboarding')
@@ -47,7 +44,6 @@ export default function Navbar() {
     fetchOnboarding();
   }, [user]);
 
-  // 2. Close dropdown if user clicks outside of it
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -58,38 +54,47 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Calculate how many steps are left [cite: 286]
   const remaining = STEPS.filter(s => !onboarding?.[s.key]).length;
+  
+  // Get user initial for avatar
+  const userInitial = user?.email ? user.email.charAt(0).toUpperCase() : "U";
 
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 32px", borderBottom: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)" }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "12px 24px", backgroundColor: "#ffffff", height: "65px", borderBottom: "none", boxShadow: "none" }}>
       
-      {/* LEFT: Logo */}
-      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-        <div style={{ width: "24px", height: "24px", backgroundColor: "var(--primary-brand)", borderRadius: "6px" }}></div>
-        <span style={{ fontWeight: "700", fontSize: "18px", color: "var(--text-heading)" }}>DocGen</span>
-      </div>
-
-      {/* RIGHT: Actions & Profile */}
+      {/* RIGHT SIDE ONLY: Search, Actions, Profile */}
       <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
         
-        {/* NEW: Onboarding Checklist Dropdown [cite: 287-311] */}
+        {/* 1. Mintlify Search Bar */}
+       {/* 1. Mintlify Search Bar */}
+        <div 
+          onClick={() => window.dispatchEvent(new CustomEvent("open-dashboard-search"))}
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", backgroundColor: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "6px 12px", width: "240px", cursor: "pointer", color: "#94a3b8" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <span style={{ fontSize: "13px", fontWeight: "500" }}>Search</span>
+          </div>
+          <span style={{ backgroundColor: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "4px", padding: "2px 6px", fontSize: "11px", fontWeight: "600", color: "#64748b" }}>⌘K</span>
+        </div>
+
+        {/* Removed Inbox Icon as per Mintlify UI */}
+
+        {/* 3. Things to do Dropdown (Your existing logic) */}
         {remaining > 0 && (
           <div style={{ position: 'relative' }} ref={dropdownRef}>
             <button 
               onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px", backgroundColor: "white", border: "1px solid var(--border-color)", borderRadius: "99px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "var(--text-heading)", boxShadow: "0 1px 2px rgba(0,0,0,0.05)" }}
+              style={{ display: "flex", alignItems: "center", gap: "8px", padding: "4px 12px", backgroundColor: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "99px", cursor: "pointer", fontSize: "13px", fontWeight: "600", color: "#334155", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="#10b981"><path d="M12 2L2 22h20L12 2z"/></svg>
               Things to do
-              <span style={{ backgroundColor: "#f1f5f9", padding: "2px 6px", borderRadius: "99px", fontSize: "11px", color: "var(--text-muted)" }}>
-                {remaining}
-              </span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#94a3b8" }}><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
 
             {dropdownOpen && (
-              <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', backgroundColor: 'white', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', width: '280px', zIndex: 100, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}>
-                <h3 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: "600", color: "var(--text-heading)" }}>Get started with DocGen</h3>
+              <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px', width: '280px', zIndex: 100, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}>
+                <h3 style={{ margin: "0 0 12px 0", fontSize: "14px", fontWeight: "600", color: "#0f172a" }}>Get started with DocGen</h3>
                 {STEPS.map(s => {
                   const isDone = onboarding?.[s.key];
                   return (
@@ -97,7 +102,7 @@ export default function Navbar() {
                       <div style={{ marginTop: "2px", width: "16px", height: "16px", borderRadius: "4px", border: isDone ? "none" : "1px solid #cbd5e1", backgroundColor: isDone ? "#059669" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {isDone && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
                       </div>
-                      <p style={{ margin: 0, fontSize: '13px', fontWeight: "500", textDecoration: isDone ? 'line-through' : 'none', color: isDone ? '#94a3b8' : 'var(--text-heading)' }}>
+                      <p style={{ margin: 0, fontSize: '13px', fontWeight: "500", textDecoration: isDone ? 'line-through' : 'none', color: isDone ? '#94a3b8' : '#334155' }}>
                         {s.label}
                       </p>
                     </div>
@@ -108,18 +113,18 @@ export default function Navbar() {
           </div>
         )}
 
-        <span style={{ fontSize: "14px", color: "var(--text-muted)", marginLeft: "8px" }}>{user?.email}</span>
-        
-        <Link 
-          to="/dashboard/new" 
-          style={{ padding: "8px 16px", backgroundColor: "var(--text-heading)", color: "var(--bg-main)", borderRadius: "6px", textDecoration: "none", fontSize: "14px", fontWeight: "500" }}
+        {/* 4. Mintlify Avatar (Click to Logout for now) */}
+        <button 
+          onClick={logout} 
+          title="Sign out"
+          style={{ width: "32px", height: "32px", borderRadius: "50%", backgroundColor: "#9333ea", color: "#ffffff", border: "none", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "14px", fontWeight: "600", cursor: "pointer", marginLeft: "4px" }}
         >
-          New Project
-        </Link>
-        <button onClick={logout} style={{ background: "none", border: "1px solid var(--border-color)", color: "var(--text-main)", padding: "8px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "14px", fontWeight: "500" }}>
-          Logout
+          {userInitial}
         </button>
+        
       </div>
+
+      <CommandPalette />
     </div>
   );
 }

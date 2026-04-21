@@ -1,6 +1,25 @@
 import React, { useState } from "react";
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Check, Copy } from "lucide-react";
 
-// Helper engine to parse strings like "2,4-6" into an array: [2, 4, 5, 6]
+// Dynamically importing languages is an option, but for Mintlify parity we just use the async loader or pre-load common ones
+// Here we load common ones to keep bundle small if using async, or we just rely on the fallback gracefully.
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
+
+SyntaxHighlighter.registerLanguage('jsx', jsx);
+SyntaxHighlighter.registerLanguage('javascript', jsx);
+SyntaxHighlighter.registerLanguage('python', python);
+SyntaxHighlighter.registerLanguage('bash', bash);
+SyntaxHighlighter.registerLanguage('json', json);
+SyntaxHighlighter.registerLanguage('css', css);
+SyntaxHighlighter.registerLanguage('markdown', markdown);
+
 const parseHighlightLines = (linesStr) => {
   if (!linesStr) return [];
   return linesStr.split(',').reduce((acc, part) => {
@@ -8,7 +27,6 @@ const parseHighlightLines = (linesStr) => {
     if (isNaN(start)) return acc;
     if (!end) return [...acc, start];
     
-    // Create an array for ranges (e.g., 4 to 6 becomes [4, 5, 6])
     const range = Array.from({ length: end - start + 1 }, (_, i) => start + i);
     return [...acc, ...range];
   }, []);
@@ -17,109 +35,75 @@ const parseHighlightLines = (linesStr) => {
 export default function CodeBlock({ children, language = "javascript", title, highlight = "" }) {
   const [copied, setCopied] = useState(false);
 
+  const rawCode = typeof children === 'string' ? children : children?.props?.children || "";
+  const highlightedLineNumbers = parseHighlightLines(highlight);
+
   const handleCopy = () => {
-    const textToCopy = typeof children === 'string' 
-      ? children 
-      : children?.props?.children || "";
-    
-    navigator.clipboard.writeText(textToCopy);
+    navigator.clipboard.writeText(rawCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // 1. Extract the raw string from MDX children
-  const rawCode = typeof children === 'string' ? children : children?.props?.children || "";
-  
-  // 2. Split the string into an array of lines (removing trailing empty newlines)
-  const codeLines = rawCode.replace(/\n$/, "").split("\n"); 
-  
-  // 3. Figure out which lines need to glow
-  const highlightedLineNumbers = parseHighlightLines(highlight);
-
   return (
-    <div style={{ 
-      margin: "32px 0", 
-      borderRadius: "8px", 
-      overflow: "hidden", 
-      border: "1px solid #1e293b", 
-      backgroundColor: "#0f172a",
-      boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)"
-    }}>
-      {/* --- HEADER BAR --- */}
-      <div style={{ 
-        display: "flex", justifyContent: "space-between", alignItems: "center", 
-        padding: "10px 16px", backgroundColor: "#1e293b", borderBottom: "1px solid #334155" 
-      }}>
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+    <div className="my-6 rounded-xl overflow-hidden border border-slate-800 bg-[#0d1117] shadow-lg flex flex-col group/codeblock relative">
+      {/* Dynamic Header */}
+      <div className="flex justify-between items-center px-4 py-2 bg-slate-800/60 border-b border-slate-700/60">
+        <div className="flex items-center gap-3">
           {title && (
-            <span style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: "500" }}>
+            <span className="text-slate-200 text-[13px] font-medium tracking-wide">
               {title}
             </span>
           )}
-          <span style={{ 
-            color: "#64748b", fontSize: "12px", fontFamily: "monospace", textTransform: "uppercase",
-            borderLeft: title ? "1px solid #334155" : "none", paddingLeft: title ? "12px" : "0"
-          }}>
+          <span className={`text-slate-400 text-[11px] font-mono tracking-wider uppercase ${title ? "border-l border-slate-700 pl-3" : ""}`}>
             {language}
           </span>
         </div>
+        
+        {/* Copy Button */}
         <button 
           onClick={handleCopy} 
-          style={{ 
-            background: "none", border: "none", color: copied ? "#10b981" : "#94a3b8",
-            cursor: "pointer", fontSize: "12px", fontWeight: "600", transition: "color 0.2s ease",
-            display: "flex", alignItems: "center", gap: "4px"
-          }}
+          className="p-1.5 rounded-md hover:bg-slate-700/50 transition-all text-slate-400 hover:text-slate-200 active:scale-95 flex items-center justify-center cursor-pointer"
+          title="Copy code"
         >
-          {copied ? "✓ Copied" : "Copy"}
+          {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
         </button>
       </div>
       
-      {/* --- CODE BODY WITH LINE HIGHLIGHTING --- */}
-      <div style={{ padding: "16px 0", overflowX: "auto" }}>
-        <pre style={{ margin: 0, padding: 0, background: "transparent" }}>
-          {/* CRITICAL: Added className so PrismJS knows what language to parse! */}
-          <code 
-            className={`language-${language}`} 
-            style={{ 
-              color: "#f8fafc", 
-              fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace", 
-              fontSize: "14px", 
-              lineHeight: "1.6",
-              display: "block"
-            }}
-          >
-            {codeLines.map((line, index) => {
-              const lineNumber = index + 1;
-              const isHighlighted = highlightedLineNumbers.includes(lineNumber);
-              
-              return (
-                <div 
-                  key={index} 
-                  style={{ 
-                    padding: "0 16px",
-                    backgroundColor: isHighlighted ? "rgba(56, 189, 248, 0.15)" : "transparent",
-                    borderLeft: isHighlighted ? "3px solid #38bdf8" : "3px solid transparent",
-                    display: "flex",
-                  }}
-                >
-                  {/* Line Number */}
-                  <span style={{ 
-                    color: "#475569", minWidth: "24px", userSelect: "none",
-                    marginRight: "16px", textAlign: "right", fontSize: "12px"
-                  }}>
-                    {lineNumber}
-                  </span>
-                  
-                  {/* Actual Code Text */}
-                  <span style={{ whiteSpace: "pre-wrap" }}>
-                    {line || " "} 
-                  </span>
-                </div>
-              );
-            })}
-          </code>
-        </pre>
+      {/* Syntax Highlighting Container */}
+      <div className="relative overflow-x-auto text-[13px] sm:text-[14px]">
+        <SyntaxHighlighter
+          language={language}
+          style={vscDarkPlus}
+          showLineNumbers={true}
+          wrapLines={true}
+          customStyle={{
+            margin: 0,
+            padding: '1.25rem 0', // Top and bottom padding
+            backgroundColor: 'transparent',
+            minWidth: '100%'
+          }}
+          lineNumberStyle={{
+            minWidth: '3.5em',
+            paddingRight: '2.5em',
+            textAlign: 'right',
+            color: '#475569',
+            pointerEvents: 'none',
+            userSelect: 'none'
+          }}
+          lineProps={(lineNumber) => {
+            let style = { display: 'block', paddingLeft: '0.5rem', paddingRight: '1rem' };
+            if (highlightedLineNumbers.includes(lineNumber)) {
+              style.backgroundColor = 'rgba(56, 189, 248, 0.1)'; // Sky-500 tint
+              style.borderLeft = '2px solid #38bdf8';
+              style.paddingLeft = 'calc(0.5rem - 2px)'; // Adjust for border
+            } else {
+              style.borderLeft = '2px solid transparent';
+            }
+            return { style };
+          }}
+        >
+          {rawCode}
+        </SyntaxHighlighter>
       </div>
     </div>
   );
