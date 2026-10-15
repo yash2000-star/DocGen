@@ -260,7 +260,43 @@ async function getUserLLM(userId, provider) {
         provider: row.provider,
         writerModel: row.writer_model,
         criticModel: row.critic_model,
+        promptBudgetTokens: config.promptBudgetTokens,
     };
+}
+
+/**
+ * The server's own AI credential, used only for the anonymous free preview.
+ * Returns null when the administrator hasn't set one up (the preview is then off).
+ */
+function getPreviewLLM() {
+    if (!config.preview.enabled) return null;
+    const definition = getProvider(config.preview.provider);
+    if (!definition) {
+        console.error(`[Preview] Unknown PREVIEW_AI_PROVIDER "${config.preview.provider}". The free preview is off.`);
+        return null;
+    }
+    const writerModel = config.preview.writerModel || definition.defaultModels.writer;
+    if (!writerModel) {
+        console.error(`[Preview] Set PREVIEW_AI_WRITER_MODEL for ${definition.label}. The free preview is off.`);
+        return null;
+    }
+    try {
+        return {
+            // The administrator chose this endpoint, so it isn't held to the user-endpoint rules.
+            client: createLLMClient({
+                provider: definition.id,
+                apiKey: config.preview.apiKey || undefined,
+                baseUrl: config.preview.baseUrl || undefined,
+            }),
+            provider: definition.id,
+            writerModel,
+            criticModel: config.preview.criticModel || definition.defaultModels.critic || writerModel,
+            promptBudgetTokens: config.promptBudgetTokens,
+        };
+    } catch (error) {
+        console.error(`[Preview] Can't use the preview AI credential: ${error.providerMessage || error.message}`);
+        return null;
+    }
 }
 
 module.exports = {
@@ -272,4 +308,5 @@ module.exports = {
     setDefault,
     deleteCredential,
     getUserLLM,
+    getPreviewLLM,
 };

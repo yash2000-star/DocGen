@@ -19,6 +19,7 @@ import Profile from "./pages/settings/Profile";
 import Billing from "./pages/settings/Billing";
 import AgentSkills from "./pages/settings/AgentSkills";
 import AiProviders from "./pages/settings/AiProviders";
+import AccountAiSettings from "./pages/AccountAiSettings";
 import Editor from "./pages/Editor";
 import NavigationEditor from "./pages/NavigationEditor";
 import Analytics from "./pages/Analytics";
@@ -137,6 +138,7 @@ function App() {
           {/* General Dashboard routes (no sidebar yet) */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/dashboard/new" element={<ProtectedRoute><NewProject /></ProtectedRoute>} />
+          <Route path="/settings/ai" element={<ProtectedRoute><AccountAiSettings /></ProtectedRoute>} />
           
           {/* --- NEW: Nested Routing using DashboardLayout --- */}
           <Route path="/dashboard/:id" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>

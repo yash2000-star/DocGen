@@ -8,15 +8,11 @@ const { visit } = require("unist-util-visit");
 const GithubSlugger = require("github-slugger").default;
 const matter = require("gray-matter");
 
-//Embedding Tool
-const { config } = require("../backend/config");
+// Ask AI search index (Postgres full-text search, no AI calls needed)
 const supabase = require("../backend/lib/supabase");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-const embeddingModel = genAI.getGenerativeModel({
-  model: config.gemini.embeddingModel,
-});
+// Longest chunk stored for Ask AI; longer sections are split.
+const MAX_CHUNK_CHARS = 4000;
 
 const DOCS_PATH = path.join(__dirname, "../docs");
 const DIST_PATH = path.join(__dirname, "../dist");
@@ -201,6 +197,59 @@ function extractSearchSections(markdown, fileTitle, route, tenant, version) {
   return sections;
 }
 
+// Splits a page into one chunk per heading section, keeping the raw markdown (code
+// samples included) because Ask AI quotes from it. Long sections are split further.
+function extractChunks(markdown, fileTitle, route) {
+  const slugger = new GithubSlugger();
+  const chunks = [];
+  let heading = null;
+  let anchor = null;
+  let lines = [];
+
+  const flush = () => {
+    const text = lines.join("\n").trim();
+    if (text.length > 20) {
+      const title = heading ? `${fileTitle} > ${heading}` : fileTitle;
+      const chunkRoute = anchor ? `${route}#${anchor}` : route;
+      for (let start = 0; start < text.length; start += MAX_CHUNK_CHARS) {
+        chunks.push({ route: chunkRoute, title, text: text.slice(start, start + MAX_CHUNK_CHARS) });
+      }
+    }
+    lines = [];
+  };
+
+  let inCodeBlock = false;
+  for (const line of markdown.split("\n")) {
+    if (line.trim().startsWith("```")) inCodeBlock = !inCodeBlock;
+    // A "#" inside a code block is a comment, not a heading.
+    if (!inCodeBlock && /^#{1,6}\s/.test(line.trim())) {
+      flush();
+      heading = line.trim().replace(/^#+\s*/, "");
+      anchor = slugger.slug(heading);
+    } else {
+      lines.push(line);
+    }
+  }
+  flush();
+  return chunks;
+}
+
+// Replaces a project's Ask AI chunks with the ones from this build.
+async function replaceChunks(tenant, version, chunks) {
+  const { error: deleteError } = await supabase
+    .from("doc_chunks")
+    .delete()
+    .eq("tenant", tenant)
+    .eq("version", version);
+  if (deleteError) throw new Error(`Couldn't clear old search chunks: ${deleteError.message}`);
+
+  for (let i = 0; i < chunks.length; i += 500) {
+    const { error } = await supabase.from("doc_chunks").insert(chunks.slice(i, i + 500));
+    if (error) throw new Error(`Couldn't save search chunks: ${error.message}`);
+  }
+  console.log(`[Search] Indexed ${chunks.length} sections for ${tenant}/${version}.`);
+}
+
 async function build() {
   if (!fs.existsSync(DIST_PATH)) {
     fs.mkdirSync(DIST_PATH, { recursive: true });
@@ -262,62 +311,10 @@ const docs = [];
     const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
     searchIndex.push(...sections);
 
-    // Vectors power Ask AI; they need a Gemini API key for embeddings.
-    const shouldGenerateVectors = config.ai.geminiEnabled;
-    // Chunking Engine
-    if (shouldGenerateVectors) {
-    const paragraphs = result.raw.split("\n\n");
-    console.log(`Generating math vectors for: ${doc.route}.md...`);
-
-    await supabase
-      .from("doc_vectors")
-      .delete()
-      .eq("tenant", doc.tenant)
-      .eq("version", doc.version)
-      .eq("route", doc.route);
-
-    const docVectorsToUpload = [];
-
-    for (const para of paragraphs) {
-      const cleanText = para.trim();
-
-      if (cleanText.length > 20) {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          const embedResult = await embeddingModel.embedContent(cleanText);
-          const vectorArray = embedResult.embedding.values;
-
-          const chunkData = {
-            tenant: doc.tenant,
-            version: doc.version,
-            route: doc.route,
-            text: cleanText,
-            embedding: vectorArray,
-          };
-
-          docVectorsToUpload.push(chunkData);
-          aiChunks.push(chunkData);
-        } catch (error) {
-          console.log(` Failed to generate embedding for ${doc.route}:`, error);
-        }
-      }
-    }
-
-    if (docVectorsToUpload.length > 0) {
-      console.log(`Upload ${docVectorsToUpload.length} vectors to Supabase...`);
-      const { error } = await supabase
-        .from("doc_vectors")
-        .insert(docVectorsToUpload);
-
-      if (error) {
-        console.error(` Supabase upload failed for ${doc.route}:`, error);
-      } else {
-        console.log(`Upload successful!`);
-      }
-    }
-    } else {
-      console.log(`⏩ Skipping vector generation for: ${doc.route} (GEMINI_API_KEY not set)`);
+    // Ask AI searches these sections by keyword.
+    const relativeRoute = doc.route.replace(`${doc.tenant}/${doc.version}/`, "");
+    for (const chunk of extractChunks(result.raw, title, relativeRoute)) {
+      aiChunks.push({ tenant: doc.tenant, version: doc.version, ...chunk });
     }
 
     const outputPath = path.join(DIST_PATH, doc.route + ".mdx");
@@ -446,18 +443,15 @@ const docs = [];
         JSON.stringify(localSearchIndex, null, 2),
       );
 
-      // Save Ai chunks
-      const localAiChunks = aiChunks
-        .filter((item) => item.tenant === tenant && item.version === version)
-        .map((item) => ({
-          ...item,
-          route: item.route.replace(`${tenant}/${version}/`, ""),
-        }));
+      // Save Ai chunks (also published as aiChunks.json for agents)
+      const localAiChunks = aiChunks.filter((item) => item.tenant === tenant && item.version === version);
 
       fs.writeFileSync(
         path.join(targetDir, "aiChunks.json"),
         JSON.stringify(localAiChunks, null, 2),
       );
+
+      await replaceChunks(tenant, version, localAiChunks);
     }
   }
 
@@ -506,4 +500,7 @@ function generateSidebarTree(docs, config) {
   return tree;
 }
 
-build();
+build().catch((error) => {
+  console.error(`[Worker] Build failed: ${error.message}`);
+  process.exit(1);
+});

@@ -20,19 +20,22 @@ const config = {
         serviceKey: env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY,
     },
 
-    gemini: {
-        apiKey: env.GEMINI_API_KEY,
-        writerModel: env.GEMINI_WRITER_MODEL || "gemini-3-flash-preview",
-        editorModel: env.GEMINI_EDITOR_MODEL || "gemini-2.5-flash-lite",
-        chatModel: env.GEMINI_CHAT_MODEL || "gemini-2.5-pro",
-        embeddingModel: env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
+    // Users write docs with their own AI keys (Settings → AI providers). The server's own
+    // AI credential is optional and only powers the anonymous free preview, which is off
+    // unless the administrator sets PREVIEW_AI_PROVIDER and its key (or base URL).
+    preview: {
+        provider: env.PREVIEW_AI_PROVIDER || "",
+        apiKey: env.PREVIEW_AI_API_KEY || "",
+        baseUrl: env.PREVIEW_AI_BASE_URL || "",
+        writerModel: env.PREVIEW_AI_WRITER_MODEL || "",
+        criticModel: env.PREVIEW_AI_CRITIC_MODEL || "",
+        // How many pages an anonymous preview may generate.
+        maxPages: Number(env.PREVIEW_MAX_PAGES) || 3,
     },
 
-    // Optional: use Vertex AI (Google Cloud) for the writer instead of a Gemini API key.
-    vertex: {
-        project: env.GOOGLE_CLOUD_PROJECT || env.ANTHROPIC_VERTEX_PROJECT_ID,
-        location: env.GOOGLE_CLOUD_REGION || env.CLOUD_ML_REGION || "us-east5",
-    },
+    // Largest prompt (in tokens) sent to a model for one call. Repos bigger than this are
+    // summarized: the most important files go in full, the rest are listed by name.
+    promptBudgetTokens: Number(env.AI_PROMPT_BUDGET_TOKENS) || 60000,
 
     razorpay: {
         keyId: env.RAZORPAY_KEY_ID,
@@ -46,8 +49,10 @@ const config = {
         pass: env.EMAIL_PASS,
     },
 
-    // How many pages an anonymous "free preview" may generate.
-    previewMaxPages: Number(env.PREVIEW_MAX_PAGES) || 3,
+    github: {
+        // Secret set on the repo's GitHub webhook. Push-triggered updates are off without it.
+        webhookSecret: env.GITHUB_WEBHOOK_SECRET || "",
+    },
 
     // Bring-your-own-key: users' AI provider keys are encrypted with this master key.
     byok: {
@@ -70,10 +75,7 @@ config.byok.enabled = Boolean(config.byok.masterKey);
 
 config.razorpay.enabled = Boolean(config.razorpay.keyId && config.razorpay.keySecret);
 config.email.enabled = Boolean(config.email.user && config.email.pass);
-config.ai = {
-    writerEnabled: Boolean(config.vertex.project || config.gemini.apiKey),
-    geminiEnabled: Boolean(config.gemini.apiKey),
-};
+config.preview.enabled = Boolean(config.preview.provider && (config.preview.apiKey || config.preview.baseUrl));
 
 // Throws with a readable list when a setting the server can't run without is missing.
 function assertRequiredConfig() {
@@ -95,14 +97,11 @@ function assertRequiredConfig() {
 
 // Prints which optional features are switched off, so a fresh setup explains itself.
 function logOptionalFeatures(log = console.log) {
-    if (!config.ai.writerEnabled) {
-        log("[Config] AI writer disabled: set GEMINI_API_KEY (or GOOGLE_CLOUD_PROJECT for Vertex AI).");
-    }
-    if (!config.ai.geminiEnabled) {
-        log("[Config] Search embeddings and Ask AI disabled: set GEMINI_API_KEY.");
-    }
     if (!config.byok.enabled) {
-        log("[Config] Bring-your-own AI keys disabled: set AI_KEY_ENCRYPTION_KEY (openssl rand -base64 32).");
+        log("[Config] Doc generation and Ask AI disabled: set AI_KEY_ENCRYPTION_KEY (openssl rand -base64 32) so users can connect their AI keys.");
+    }
+    if (!config.preview.enabled) {
+        log("[Config] Anonymous free preview disabled: set PREVIEW_AI_PROVIDER and PREVIEW_AI_API_KEY to enable it.");
     }
     if (!config.razorpay.enabled) {
         log("[Config] Billing disabled: set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable it.");
