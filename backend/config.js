@@ -37,6 +37,21 @@ const config = {
     // summarized: the most important files go in full, the rest are listed by name.
     promptBudgetTokens: Number(env.AI_PROMPT_BUDGET_TOKENS) || 60000,
 
+    // Background jobs (doc generation runs). See backend/jobs/worker.js.
+    jobs: {
+        // Jobs the API server runs at once. 0 runs no worker in the API server; start
+        // `npm run worker` processes instead.
+        concurrency: env.WORKER_CONCURRENCY !== undefined && env.WORKER_CONCURRENCY !== ""
+            ? Math.max(0, Number(env.WORKER_CONCURRENCY) || 0)
+            : 2,
+        pollMs: Number(env.JOB_POLL_MS) || 2000,
+        heartbeatSeconds: Number(env.JOB_HEARTBEAT_SECONDS) || 15,
+        // A running job with no heartbeat for this long is retried by another worker.
+        staleSeconds: Number(env.JOB_STALE_SECONDS) || 120,
+        // First retry delay after a temporary failure; doubles on each attempt.
+        retryBaseSeconds: Number(env.JOB_RETRY_BASE_SECONDS) || 30,
+    },
+
     razorpay: {
         keyId: env.RAZORPAY_KEY_ID,
         keySecret: env.RAZORPAY_KEY_SECRET,
