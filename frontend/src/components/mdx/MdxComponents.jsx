@@ -242,9 +242,10 @@ export const Update = ({ label = "Update", date, children }) => (
   </div>
 );
 
-export const Tooltip = ({ text, children }) => (
+// Mintlify pages use tip="..."; text="..." is accepted too.
+export const Tooltip = ({ tip, text, children }) => (
   <span 
-    title={text}
+    title={tip || text}
     className="border-b border-dashed border-slate-400 dark:border-slate-500 cursor-help text-slate-900 dark:text-slate-100 font-medium"
   >
     {children}

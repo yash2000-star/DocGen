@@ -1,4 +1,9 @@
 const { isFatalLLMError } = require("./ai/errors");
+const { COMPONENT_NAMES } = require("./mdx/components");
+
+// The allowed components come from the shared contract, so the critic, the compiler and
+// the docs viewer always agree.
+const ALLOWED_COMPONENTS = COMPONENT_NAMES.map((name) => `<${name}>`).join(", ");
 
 // The critic runs on the user's own provider with their critic model, which is usually
 // a cheaper model than the writer: cleanup and fact-checking need less reasoning.
@@ -34,10 +39,12 @@ Your job is to review an MDX documentation draft and fix ALL formatting, structu
 9. RETURN VALUES: Check that <ResponseField> descriptions match what the function actually returns.
 
 ### STRICTLY ALLOWED COMPONENTS (replace anything else with markdown):
-<Note>, <Tip>, <Info>, <Warning>, <Danger>, <Check>, <Steps>, <Step>,
-<Card>, <CardGroup>, <CodeGroup>, <Accordion>, <AccordionGroup>,
-<ParamField>, <ResponseField>, <Expandable>, <RequestExample>,
-<ResponseExample>, <Badge>, <Tooltip>, <Frame>, <Update>, <ApiPlayground>
+${ALLOWED_COMPONENTS}
+
+### NO CODE IN THE PAGE (it is removed before publishing, so pages relying on it break):
+- No import or export statements.
+- No JavaScript expressions in {braces}. Prop values are plain: title="Text", cols={2}, required, body={{ "name": "value" }}.
+- In normal text, write a literal "<" as &lt; and a literal "{" or "}" as \{ or \}.
 ${sourceContext}
 
 ### THE DRAFT TO REVIEW:
