@@ -2,14 +2,20 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { supabase } from "../lib/auth";
-import { updateProjectStatus } from "../lib/projects";
 import { getGreeting } from "../lib/utils";
 import { getUserRole } from '../lib/projects';
 import { apiFetch } from '../lib/api';
 
+// Project statuses while a generation job is waiting or running.
+const BUSY_STATUSES = ['queued', 'running', 'building'];
+
+// Columns members may read (the job payload stays on the server).
+const EVENT_COLUMNS = 'id, project_id, event_type, status, triggered_by, files_count, created_at, provider, model, input_tokens, output_tokens, error_message, finished_at, attempts, max_attempts, run_after, started_at, progress, cancel_requested';
+
 const statusColors = {
   live:       { bg: '#ecfdf5', color: '#059669', label: 'Live' },
   successful: { bg: '#ecfdf5', color: '#059669', label: 'Live' },
+  queued:     { bg: '#eff6ff', color: '#2563eb', label: 'Queued' },
   running:    { bg: '#fffbeb', color: '#d97706', label: 'Building' },
   building:   { bg: '#fffbeb', color: '#d97706', label: 'Building' },
   failed:     { bg: '#fef2f2', color: '#dc2626', label: 'Failed' },
@@ -38,7 +44,7 @@ function PreviewUnavailable({ status }) {
         border: '1px solid #e2e8f0', boxShadow: '0 2px 4px rgba(0,0,0,0.05)', 
         zIndex: 10, fontSize: '13px', color: '#64748b', fontWeight: 500 
       }}>
-        {status === 'building' ? (
+        {BUSY_STATUSES.includes(status) ? (
           <span style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>
             Building preview...
@@ -95,8 +101,8 @@ function ActionButtons({ project, onRebuild, userRole }) {
       </button>
       
       {['admin', 'editor'].includes(userRole) && (
-        <button onClick={onRebuild} disabled={project.status === 'building'} style={{...iconOnlyStyle, opacity: project.status === 'building' ? 0.5 : 1}} title="Manual Update">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: project.status === 'building' ? 'spin 1s linear infinite' : 'none' }}><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>
+        <button onClick={onRebuild} disabled={BUSY_STATUSES.includes(project.status)} style={{...iconOnlyStyle, opacity: BUSY_STATUSES.includes(project.status) ? 0.5 : 1}} title="Regenerate docs">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: BUSY_STATUSES.includes(project.status) ? 'spin 1s linear infinite' : 'none' }}><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>
         </button>
       )}
       
@@ -124,13 +130,17 @@ function formatTokens(n) {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
 }
 
-function ActivityRow({ event }) {
+function ActivityRow({ event, canCancel, onCancel }) {
   const [open, setOpen] = useState(false);
   const isSuccess = event.status === 'successful' || event.status === 'live';
-  const isRunning = event.status === 'running' || event.status === 'building';
-  
-  const statusColor = isSuccess ? '#059669' : isRunning ? '#d97706' : '#dc2626';
-  const statusBg = isSuccess ? '#ecfdf5' : isRunning ? '#fffbeb' : '#fef2f2';
+  const isQueued = event.status === 'queued';
+  const isRunning = event.status === 'running' || event.status === 'building' || isQueued;
+  const isCancelled = event.status === 'cancelled';
+  const isActive = event.status === 'queued' || event.status === 'running';
+  const { pagesDone, pagesTotal } = event.progress || {};
+
+  const statusColor = isSuccess ? '#059669' : isQueued ? '#2563eb' : isRunning ? '#d97706' : isCancelled ? '#64748b' : '#dc2626';
+  const statusBg = isSuccess ? '#ecfdf5' : isQueued ? '#eff6ff' : isRunning ? '#fffbeb' : isCancelled ? '#f1f5f9' : '#fef2f2';
 
   return (
     <div style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: open ? '#f8fafc' : '#ffffff' }}>
@@ -152,6 +162,12 @@ function ActivityRow({ event }) {
             <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
               {formatDistanceToNow(new Date(event.created_at))} ago
             </p>
+            {isActive && event.progress?.message && (
+              <p data-testid="activity-progress" style={{ fontSize: '12px', color: statusColor, margin: '4px 0 0 0' }}>
+                {event.cancel_requested ? 'Cancelling…' : event.progress.message}
+                {event.progress.step === 'writing' && pagesTotal ? ` · ${pagesDone} of ${pagesTotal} pages` : ''}
+              </p>
+            )}
           </div>
         </div>
         
@@ -159,14 +175,23 @@ function ActivityRow({ event }) {
         <div>
           <span style={{ backgroundColor: statusBg, color: statusColor, padding: '4px 8px', borderRadius: '6px', fontSize: '12px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             {isSuccess && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
-            {isRunning && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>}
+            {isRunning && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: event.status === 'running' ? 'spin 1s linear infinite' : 'none' }}><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.59-8.36l5.67-5.67"/></svg>}
             {!isSuccess && !isRunning && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>}
             {isSuccess ? 'Successful' : event.status ? event.status.charAt(0).toUpperCase() + event.status.slice(1) : 'Unknown'}
           </span>
         </div>
 
-        {/* Column 3: Pages written and AI tokens used */}
+        {/* Column 3: Pages written and AI tokens used (or Cancel while it runs) */}
         <div style={{ fontSize: '13px', color: '#64748b' }}>
+          {isActive && canCancel && !event.cancel_requested && (
+            <button
+              data-testid="activity-cancel"
+              onClick={(e) => { e.stopPropagation(); onCancel(event.id); }}
+              style={{ marginRight: '8px', padding: '3px 10px', fontSize: '12px', fontWeight: 600, color: '#dc2626', background: '#fff', border: '1px solid #fecaca', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+          )}
           {event.files_count > 0 ? `${event.files_count} page${event.files_count === 1 ? '' : 's'}` : '-'}
           {(event.input_tokens > 0 || event.output_tokens > 0) && (
             <span title="AI tokens used (input + output)"> · {formatTokens((event.input_tokens || 0) + (event.output_tokens || 0))} tokens</span>
@@ -188,8 +213,11 @@ function ActivityRow({ event }) {
           {(event.input_tokens > 0 || event.output_tokens > 0) && (
             <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Tokens:</strong> <span>{event.input_tokens.toLocaleString()} in · {event.output_tokens.toLocaleString()} out</span></div>
           )}
+          {event.attempts > 1 && (
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Attempts:</strong> <span>{event.attempts} of {event.max_attempts}</span></div>
+          )}
           {event.error_message && (
-            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155', flexShrink: 0 }}>Error:</strong> <span style={{ color: '#b91c1c' }}>{event.error_message}</span></div>
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155', flexShrink: 0 }}>{isActive ? 'Last error:' : 'Error:'}</strong> <span style={{ color: '#b91c1c' }}>{event.error_message}</span></div>
           )}
           <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Event ID:</strong> <span style={{ fontFamily: 'monospace' }}>{event.id}</span></div>
         </div>
@@ -208,7 +236,7 @@ export default function ProjectOverview() {
   const [isHovered, setIsHovered] = useState(false);
 
   const loadEvents = useCallback(async () => {
-    const { data: eventsData } = await supabase.from('build_events').select('*').eq('project_id', id).order('created_at', { ascending: false }).limit(20);
+    const { data: eventsData } = await supabase.from('build_events').select(EVENT_COLUMNS).eq('project_id', id).order('created_at', { ascending: false }).limit(20);
     setEvents(eventsData || []);
   }, [id]);
 
@@ -247,38 +275,42 @@ export default function ProjectOverview() {
     return () => supabase.removeChannel(subscription);
   }, [id, loadEvents]);
 
-  const handleRegenerate = async () => {
-    await updateProjectStatus(project.id, 'building', 0);
-    setProject(p => ({ ...p, status: 'building' }));
-    
-    const optimisticEvent = {
-      id: 'temp-' + Date.now(),
-      project_id: project.id,
-      event_type: 'manual_update',
-      status: 'running',
-      files_count: 0,
-      triggered_by: 'dashboard',
-      created_at: new Date().toISOString()
-    };
-    setEvents(prev => [optimisticEvent, ...prev]);
+  // While a job is waiting or running, refresh the feed so its progress stays current.
+  const hasActiveJob = events.some((e) => e.status === 'queued' || e.status === 'running');
+  useEffect(() => {
+    if (!hasActiveJob) return;
+    const timer = setInterval(loadEvents, 3000);
+    return () => clearInterval(timer);
+  }, [hasActiveJob, loadEvents]);
 
-    apiFetch(`/api/github`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoUrl: project.repo_url, projectName: project.project_name, tenantName: project.tenant_name })
-    })
-    .then(async res => {
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
-    })
-    .catch(async err => {
-      console.error("Trigger failed", err);
-      // Don't leave the project stuck in "building" if the request was rejected.
-      await updateProjectStatus(project.id, 'failed', 0);
-      setProject(p => ({ ...p, status: 'failed' }));
-    });
+  const [actionError, setActionError] = useState('');
+
+  // Queues a full regeneration; the worker picks it up and the feed shows its progress.
+  const handleRegenerate = async () => {
+    setActionError('');
+    try {
+      const res = await apiFetch(`/api/github`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl: project.repo_url, projectName: project.project_name, tenantName: project.tenant_name })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && data.code !== 'already_queued') throw new Error(data.error || `HTTP ${res.status}`);
+      setProject(p => ({ ...p, status: p.status === 'running' ? 'running' : 'queued' }));
+    } catch (err) {
+      setActionError(err instanceof TypeError ? "Couldn't reach the server." : err.message);
+    }
+    loadEvents();
+  };
+
+  const handleCancel = async (jobId) => {
+    setActionError('');
+    const res = await apiFetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' }).catch(() => null);
+    if (!res?.ok) {
+      const data = await res?.json().catch(() => ({}));
+      setActionError(data?.error || "Couldn't cancel the run.");
+    }
+    loadEvents();
   };
 
   if (loading || !project) {
@@ -429,6 +461,12 @@ export default function ProjectOverview() {
             <h2 style={{ fontSize: "20px", fontWeight: "600", color: "#0f172a", margin: "0 0 6px 0", letterSpacing: "-0.5px" }}>Activity</h2>
             <p style={{ fontSize: "15px", color: "#64748b", margin: 0 }}>Recent changes made to your docs</p>
           </div>
+
+          {actionError && (
+            <div role="alert" data-testid="activity-error" style={{ marginBottom: "16px", padding: "10px 14px", backgroundColor: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: "8px", fontSize: "13px" }}>
+              {actionError}
+            </div>
+          )}
           
           <div style={{ backgroundColor: "#ffffff", borderRadius: "16px", border: "1px solid #e2e8f0", overflow: "hidden", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.02), 0 2px 4px -2px rgba(0,0,0,0.02)" }}>
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 32px", padding: "16px 24px", backgroundColor: "#ffffff", borderBottom: "1px solid #e2e8f0", fontSize: "13px", fontWeight: "600", color: "#0f172a" }}>
@@ -443,7 +481,7 @@ export default function ProjectOverview() {
             ) : (
               <div>
                 {events.map((event) => (
-                  <ActivityRow key={event.id} event={event} />
+                  <ActivityRow key={event.id} event={event} canCancel={['admin', 'editor'].includes(userRole)} onCancel={handleCancel} />
                 ))}
               </div>
             )}

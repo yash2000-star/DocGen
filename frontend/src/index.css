@@ -85,3 +85,5 @@
 
   code { font-family: 'JetBrains Mono', monospace; }
 }
+/* Spinner used by status badges and buttons. */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

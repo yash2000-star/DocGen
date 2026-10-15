@@ -2,23 +2,35 @@
 
 DocGen turns a GitHub repository into a polished, Mintlify-style documentation site, written by **your own AI**: connect a Claude, OpenAI, Gemini, OpenRouter or self-hosted model key, and DocGen does the rest. DocGen itself never pays for or resells AI. An AI "architect" plans the site, a "ghostwriter" writes each page, and a "critic" cleans up the result. You get introduction, quickstart, guide and reference pages instead of one page per file.
 
-> **Status:** early development. The core flow (connect your AI key → import a repo → generate → view docs → Ask AI) works locally. A job queue and security hardening are next on the roadmap.
+> **Status:** early development. The core flow (connect your AI key → import a repo → generate → view docs → Ask AI) works locally, with generation running as background jobs. Security hardening is next on the roadmap.
 
 ## How it works
 
 ```
 frontend/   React 19 + Vite dashboard and docs viewer
-backend/    Express 5 API: auth, generation pipeline, billing, Ask AI
+backend/    Express 5 API: auth, job queue and worker, generation pipeline, billing, Ask AI
 build/      Build worker: docs/<tenant>/<project>/*.mdx → dist/ (sidebar, search index, Ask AI index)
 lib/        Shared helpers (docs.json loader, llms.txt / skill.md generator)
 supabase/   Database schema and Row-Level Security policies
 ```
 
-1. You connect your AI provider and import `https://github.com/<owner>/<repo>` from the dashboard.
-2. The backend clones it and, with your AI key, plans 5–10 pages and writes them to `docs/<owner>/<repo>/`. Large repos are summarized to fit the model: the most important files go in full, the rest are listed by name.
+1. You connect your AI provider and import `https://github.com/<owner>/<repo>` from the dashboard. The request is queued as a job and answered at once; a worker picks it up and the page shows its real progress (cloning, planning, writing page 2 of 7, building). You can leave the page or cancel the run.
+2. The worker clones it and, with your AI key, plans 5–10 pages and writes them to `docs/<owner>/<repo>/`. Large repos are summarized to fit the model: the most important files go in full, the rest are listed by name.
 3. Every generated page must compile; one that doesn't goes back to your critic model with the error to fix. `build/build.js` then compiles each page on the server into a code-free tree (no `import`/`export`, `{expressions}` or event handlers; only known components and safe links) and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
 4. The docs are published at `/docs/<owner>/<repo>`. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
-5. Each run is listed in the project's activity feed with the model used and the tokens it cost.
+5. Each run is listed in the project's activity feed with its progress, the model used and the tokens it cost.
+
+### Background jobs
+
+Generations, free previews and push updates are jobs in the `build_events` table. Workers claim them with `FOR UPDATE SKIP LOCKED`, so several can share the queue safely.
+
+- **One at a time per project:** a project has at most one running and one waiting job. Regenerating while a run is waiting points you at that run; pushes that arrive while an update is waiting are merged into it.
+- **Retries:** a temporary failure (rate limit, provider outage, network) is retried up to 3 times with growing delays. A problem you have to fix, like a rejected key, a missing model or a repo with no code, fails at once with the reason.
+- **Crash recovery:** running jobs send a heartbeat. If a worker dies, its job is picked up again after `JOB_STALE_SECONDS`. On a normal shutdown, running jobs go straight back to the queue.
+- **Cancel:** from the progress page or the activity feed. A waiting job is cancelled at once; a running one stops after the page it's writing.
+- **No half-written sites:** each run writes into its own folder under `repos/`, and pages are copied into `docs/` only when the whole run succeeds.
+
+The API server runs up to `WORKER_CONCURRENCY` jobs (default 2). To scale workers separately, set `WORKER_CONCURRENCY=0` on the API server and run `npm --prefix backend run worker` as many times as you like.
 
 ## Run it locally
 
@@ -33,7 +45,7 @@ supabase/   Database schema and Row-Level Security policies
 Apply the schema in `supabase/migrations/` to your Supabase project. Use one of these:
 
 - **Supabase CLI:** `supabase link --project-ref <your-ref>` then `supabase db push`
-- **Dashboard:** open **SQL Editor**, paste the contents of `supabase/migrations/20261015000000_initial_schema.sql`, and run it.
+- **Dashboard:** open **SQL Editor** and run each file in `supabase/migrations/`, oldest first.
 
 ### 2. Turn on sign-in
 
@@ -98,7 +110,7 @@ To try the anonymous free preview, set `PREVIEW_AI_PROVIDER` and `PREVIEW_AI_API
 
 ### Optional: update docs on every push
 
-Set `GITHUB_WEBHOOK_SECRET`, then add a webhook to the repository on GitHub: payload URL `https://<your-backend>/api/webhook`, content type `application/json`, the same secret, and the **push** event. Pages for changed files are rewritten with the project owner's AI key. Unsigned requests are refused.
+Set `GITHUB_WEBHOOK_SECRET`, then add a webhook to the repository on GitHub: payload URL `https://<your-backend>/api/webhook`, content type `application/json`, the same secret, and the **push** event. Pages for changed files are rewritten with the project owner's AI key, as a background job. Unsigned requests are refused.
 
 ## Tests
 
@@ -120,13 +132,17 @@ npm --prefix backend test
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
 | "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
 | Docs page says "Document not found" | Wait for the build to finish. The project status turns **Successful** on the dashboard when it does. |
+| A run stays **Queued** | No worker is running. Check the backend log for `[Worker] ... running up to N job(s)`; if `WORKER_CONCURRENCY=0`, start `npm --prefix backend run worker`. |
+| The activity feed says "Retrying in 1 min" | The provider failed temporarily. The run retries on its own; the row shows the last error. |
 
 ## Project layout
 
 | Path | Contents |
 |---|---|
 | `backend/server.js` | API routes |
-| `backend/services/generationPipeline.js` | Clone → plan → write → save pipeline shared by the dashboard and free preview |
+| `backend/jobs/` | Job queue (`queue.js`), worker (`worker.js`) and what each job type does (`handlers.js`) |
+| `backend/worker.js` | Standalone worker process (`npm run worker`) |
+| `backend/services/generationPipeline.js` | Clone → plan → write → publish pipeline the jobs run |
 | `backend/aiWriter.js`, `backend/aiEditor.js` | Architect, ghostwriter and critic prompts |
 | `backend/ai/` | One client interface for Anthropic, OpenAI, Gemini and OpenAI-compatible providers |
 | `backend/services/aiCredentials.js` | Encrypted storage and testing of users' own AI keys; `getUserLLM()` for generation |

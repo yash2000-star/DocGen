@@ -65,7 +65,8 @@ as $$
          locked_by    = p_worker,
          started_at   = coalesce(b.started_at, now()),
          heartbeat_at = now(),
-         attempts     = b.attempts + 1
+         attempts     = b.attempts + 1,
+         progress     = jsonb_build_object('step', 'starting', 'message', 'Starting')
    where b.id = (
            select q.id
              from public.build_events q

@@ -13,6 +13,7 @@ const scanCodeFiles = require("../codeScanner");
 const { generatePage, generateArchitectBlueprint, generateDocs } = require("../aiWriter");
 const { DOCS_DIR, REPOS_DIR, ROOT_DIR, isSafeSegment, parseGithubRepoUrl } = require("../lib/paths");
 const { meterClient } = require("../ai/usage");
+const { LLMError } = require("../ai/errors");
 
 const BUILD_SCRIPT = path.join(ROOT_DIR, "build", "build.js");
 const PAGE_DELAY_MS = 3000; // Rate limiting between AI calls
@@ -141,7 +142,7 @@ async function generateProjectDocs({ repoUrl, tenantName, projectName, maxPages 
     }
 
     // Count every token this run uses, across the architect, writer and critic.
-    const { client: meteredClient, totals: usage } = meterClient(llm.client);
+    const { client: meteredClient, totals: usage, lastError } = meterClient(llm.client);
     const runLlm = { ...llm, client: meteredClient };
     const report = makeReporter(onProgress);
     const workspace = createWorkspace(tenantName, projectName, runId);
@@ -196,6 +197,8 @@ async function generateProjectDocs({ repoUrl, tenantName, projectName, maxPages 
         }
 
         if (writtenPages.length === 0) {
+            // Every page failed: if the provider was the reason (outage, rate limit), say so.
+            if (lastError() instanceof LLMError) throw lastError();
             throw new PipelineError("The AI writer did not produce any pages. Check the backend logs and your AI provider settings.", 502);
         }
         await checkCancelled(shouldCancel);
@@ -253,7 +256,7 @@ async function updateDocsForFiles({ repoUrl, tenantName, projectName, files, llm
         throw new PipelineError("No AI provider is connected.", 400);
     }
 
-    const { client: meteredClient, totals: usage } = meterClient(llm.client);
+    const { client: meteredClient, totals: usage, lastError } = meterClient(llm.client);
     const runLlm = { ...llm, client: meteredClient };
     const report = makeReporter(onProgress);
     const workspace = createWorkspace(tenantName, projectName, runId);
@@ -284,6 +287,7 @@ async function updateDocsForFiles({ repoUrl, tenantName, projectName, files, llm
         }
         await checkCancelled(shouldCancel);
 
+        if (generatedCount === 0 && lastError() instanceof LLMError) throw lastError();
         if (generatedCount > 0) {
             await report({ step: "saving", message: `Saving ${generatedCount} pages`, pagesDone: filesToProcess.length, pagesTotal: filesToProcess.length });
             publishPages(workspace.outDir, tenantName, projectName);

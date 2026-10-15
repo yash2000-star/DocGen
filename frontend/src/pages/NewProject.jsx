@@ -4,6 +4,14 @@ import { supabase } from "../lib/auth";
 import { createProject } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
 import { apiFetch } from '../lib/api';
+import { JobSteps } from "../components/JobProgress";
+import { useJobPolling } from "../lib/jobs";
+
+async function loadJob(jobId) {
+  const res = await apiFetch(`/api/jobs/${jobId}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()).job;
+}
 
 export default function NewProject() {
   const navigate = useNavigate();
@@ -15,7 +23,9 @@ export default function NewProject() {
   const [error, setError] = useState("");
   const [projectId, setProjectId] = useState(null);
   
-  const [currentProgressStep, setCurrentProgressStep] = useState(0);
+  const [jobId, setJobId] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
+  const { job } = useJobPolling(jobId, loadJob);
   // "checking" | "ready" | "missing" (no provider connected) | "disabled" (server can't store keys)
   const [aiStatus, setAiStatus] = useState("checking");
 
@@ -29,13 +39,6 @@ export default function NewProject() {
       })
       .catch(() => setAiStatus("ready")); // Backend unreachable: let the submit report it.
   }, []);
-
-  const progressSteps = [
-    "Cloning repository...",
-    "Analyzing code architecture...",
-    "Generating AI documentation...",
-    "Compiling static site..."
-  ];
 
   useEffect(() => {
     const passedRepo = searchParams.get("repo");
@@ -96,7 +99,7 @@ export default function NewProject() {
       repo_url: repoUrl,
       project_name: projectName,
       tenant_name: tenantName,
-      status: "running" 
+      status: "queued"
     });
 
     if (dbErr) {
@@ -107,19 +110,18 @@ export default function NewProject() {
     setProjectId(project.id);
     setStep("generating");
 
+    // The server queues the run and answers at once; a worker writes the docs and
+    // reports progress on the job, which this page polls.
     apiFetch(`/api/github`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoUrl, projectName, tenantName })
     })
     .then(async res => {
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          if (data.code === "ai_not_connected") setAiStatus("missing");
-          throw new Error(data.error || `Generation failed (HTTP ${res.status}).`);
-        }
-        // AI Phase is done, Background Factory Worker is now compiling!
-        setCurrentProgressStep(3); // Jump to "Compiling static site..."
+        const data = await res.json().catch(() => ({}));
+        if (data.jobId && (res.ok || data.code === "already_queued")) return setJobId(data.jobId);
+        if (data.code === "ai_not_connected") setAiStatus("missing");
+        throw new Error(data.error || `Generation failed (HTTP ${res.status}).`);
     })
     .catch(async err => {
       // TypeError means fetch itself failed (backend down or unreachable).
@@ -127,59 +129,29 @@ export default function NewProject() {
         ? "Server connection failed or timed out. Is the backend running?"
         : err.message);
       setStep("form");
-      // Don't leave the project stuck in "running" if the backend rejected the request.
+      // Don't leave the project stuck waiting if the backend rejected the request.
       await supabase.from('projects').update({ status: 'failed' }).eq('id', project.id);
     });
   };
 
-  useEffect(() => {
-    if (step !== "generating") return;
-    
-    const timer = setInterval(() => {
-      setCurrentProgressStep(prev => prev < 2 ? prev + 1 : prev); 
-    }, 4500); 
-    
-    return () => clearInterval(timer);
-  }, [step]);
+  // What to show is derived from the job once it finishes.
+  const view = step === "generating" && job?.status === "successful" ? "done"
+    : step === "generating" && job?.status === "failed" ? "failed"
+    : step === "generating" && job?.status === "cancelled" ? "cancelled"
+    : step;
+  const shownError = view === "failed"
+    ? job.error_message || "Generation failed. See the project's activity feed for details."
+    : error;
 
-  useEffect(() => {
-    if (step !== "generating" || !projectId) return;
-    
-    // 1. Supabase Realtime (Instant updates)
-    const subscription = supabase
-      .channel('project-generation-updates')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'projects', filter: `id=eq.${projectId}` },
-        (payload) => {
-          if (payload.new.status === 'successful' || payload.new.status === 'live') {
-            setCurrentProgressStep(3); 
-            setTimeout(() => setStep("done"), 1200); 
-          } else if (payload.new.status === 'failed') {
-            setError("Build failed in the background. Please check the logs.");
-            setStep("form");
-          }
-        }
-      )
-      .subscribe();
-      
-    // 2. Polling Fallback (Fires every 4s in case Realtime is disabled on the Postgres table)
-    const pollInterval = setInterval(async () => {
-      const { data } = await supabase.from('projects').select('status').eq('id', projectId).single();
-      if (data && (data.status === 'successful' || data.status === 'live')) {
-        setCurrentProgressStep(3); 
-        setTimeout(() => setStep("done"), 1200); 
-      } else if (data && data.status === 'failed') {
-        setError("Build failed in the background. Please check the logs.");
-        setStep("form");
-      }
-    }, 4000);
-
-    return () => {
-      supabase.removeChannel(subscription);
-      clearInterval(pollInterval);
-    };
-  }, [step, projectId]);
+  const handleCancel = async () => {
+    setCancelling(true);
+    const res = await apiFetch(`/api/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => null);
+    if (!res?.ok) {
+      const data = await res?.json().catch(() => ({}));
+      setError(data?.error || "Couldn't cancel the generation.");
+      setCancelling(false);
+    }
+  };
 
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "var(--bg-sidebar)", fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -190,16 +162,16 @@ export default function NewProject() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "40px", fontSize: "14px", fontWeight: "500", color: "var(--text-muted)" }}>
           <span style={{ color: step === "form" ? "var(--primary-brand)" : "var(--text-main)" }}>1. Repository</span>
           <span style={{ color: "var(--border-color)" }}>──────────</span>
-          <span style={{ color: step === "generating" ? "var(--primary-brand)" : (step === "done" ? "var(--text-main)" : "var(--text-muted)") }}>2. Generating</span>
+          <span style={{ color: view === "generating" ? "var(--primary-brand)" : (view === "done" ? "var(--text-main)" : "var(--text-muted)") }}>2. Generating</span>
           <span style={{ color: "var(--border-color)" }}>──────────</span>
-          <span style={{ color: step === "done" ? "var(--primary-brand)" : "var(--text-muted)" }}>3. Done</span>
+          <span style={{ color: view === "done" ? "var(--primary-brand)" : "var(--text-muted)" }}>3. Done</span>
         </div>
 
         <div style={{ backgroundColor: "var(--bg-main)", borderRadius: "12px", border: "1px solid var(--border-color)", padding: "40px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)" }}>
           
-          {error && (
-            <div style={{ marginBottom: "24px", padding: "12px", backgroundColor: "#fef2f2", color: "#dc2626", borderRadius: "8px", fontSize: "14px", border: "1px solid #fecaca" }}>
-              {error}
+          {shownError && (
+            <div data-testid="new-project-error" style={{ marginBottom: "24px", padding: "12px", backgroundColor: "#fef2f2", color: "#dc2626", borderRadius: "8px", fontSize: "14px", border: "1px solid #fecaca" }}>
+              {shownError}
             </div>
           )}
 
@@ -238,36 +210,45 @@ export default function NewProject() {
             </form>
           )}
 
-          {step === "generating" && (
+          {view === "generating" && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "10px 0" }}>
               <div style={{ width: "32px", height: "32px", border: "3px solid #f3f3f3", borderTop: "3px solid var(--primary-brand)", borderRadius: "50%", animation: "spin 1s linear infinite", marginBottom: "16px" }} />
               <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
               <h2 style={{ fontSize: "18px", fontWeight: "600", margin: "0 0 8px 0", color: "var(--text-heading)" }}>Creating your docs</h2>
-              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 32px 0" }}>This process typically takes 1-3 minutes to complete.</p>
-              
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px", width: "100%", maxWidth: "300px" }}>
-                {progressSteps.map((progressText, index) => {
-                  const isCompleted = index < currentProgressStep;
-                  const isActive = index === currentProgressStep;
-                  
-                  return (
-                    <div key={index} style={{ display: "flex", alignItems: "center", gap: "12px", opacity: (isCompleted || isActive) ? 1 : 0.4, transition: "opacity 0.3s" }}>
-                      <div style={{ 
-                        width: "20px", height: "20px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                        backgroundColor: isCompleted ? "var(--text-heading)" : "transparent",
-                        border: isCompleted ? "none" : isActive ? "2px solid var(--text-heading)" : "2px dashed var(--border-color)"
-                      }}>
-                        {isCompleted && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--bg-main)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
-                      </div>
-                      <span style={{ fontSize: "14px", fontWeight: isActive ? "600" : "500", color: "var(--text-heading)" }}>{progressText}</span>
-                    </div>
-                  );
-                })}
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: "0 0 32px 0" }}>This usually takes a few minutes. You can leave this page; the run continues and shows in the project's activity feed.</p>
+
+              <JobSteps job={job} />
+
+              <div style={{ display: "flex", gap: "12px", marginTop: "32px" }}>
+                <button type="button" onClick={() => navigate(`/dashboard/${projectId}`)} style={{ padding: "8px 14px", background: "none", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)", fontSize: "13px", fontWeight: "500", cursor: "pointer" }}>Go to project</button>
+                {jobId && job?.status !== "successful" && (
+                  <button type="button" data-testid="cancel-job" onClick={handleCancel} disabled={cancelling || job?.cancel_requested} style={{ padding: "8px 14px", background: "none", border: "1px solid #fecaca", borderRadius: "8px", color: "#dc2626", fontSize: "13px", fontWeight: "500", cursor: cancelling ? "default" : "pointer", opacity: cancelling || job?.cancel_requested ? 0.6 : 1 }}>
+                    {cancelling || job?.cancel_requested ? "Cancelling…" : "Cancel"}
+                  </button>
+                )}
               </div>
             </div>
           )}
 
-          {step === "done" && (
+          {view === "cancelled" && (
+            <div data-testid="job-cancelled" style={{ textAlign: "center", padding: "10px 0" }}>
+              <h3 style={{ fontSize: "18px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Generation cancelled</h3>
+              <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "0 0 24px 0" }}>No pages were published from this run.</p>
+              <button onClick={() => navigate(`/dashboard/${projectId}`)} style={{ padding: "10px 20px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>
+                Go to project
+              </button>
+            </div>
+          )}
+
+          {view === "failed" && (
+            <div style={{ textAlign: "center" }}>
+              <button onClick={() => navigate(`/dashboard/${projectId}`)} style={{ padding: "10px 20px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>
+                Go to project
+              </button>
+            </div>
+          )}
+
+          {view === "done" && (
             <div style={{ textAlign: "center", padding: "20px 0" }}>
               <div style={{ width: "64px", height: "64px", backgroundColor: "#ecfdf5", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 24px", color: "#059669" }}>
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
