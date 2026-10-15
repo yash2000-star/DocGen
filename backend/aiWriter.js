@@ -1,25 +1,20 @@
-const { GoogleGenAI } = require("@google/genai");
-const { config } = require("./config");
 const editDocs = require("./aiEditor");
+const { isFatalLLMError } = require("./ai/errors");
+const { buildSourceDigest } = require("./ai/sourceDigest");
 
-// The writer uses Vertex AI when a Google Cloud project is configured, otherwise a Gemini API key.
-// The client is created lazily so the server can boot without AI credentials.
-let clientInstance = null;
-function getWriterClient() {
-    if (!clientInstance) {
-        if (config.vertex.project) {
-            clientInstance = new GoogleGenAI({
-                vertexai: true,
-                project: config.vertex.project,
-                location: config.vertex.location,
-            });
-        } else if (config.gemini.apiKey) {
-            clientInstance = new GoogleGenAI({ apiKey: config.gemini.apiKey });
-        } else {
-            throw new Error("AI writer is not configured. Set GEMINI_API_KEY (or GOOGLE_CLOUD_PROJECT) in backend/.env.");
-        }
+// Every function here takes `llm`: the user's own AI provider, from getUserLLM().
+//   { client, writerModel, criticModel, promptBudgetTokens? }
+// Prompt size is capped so large repos fit in the model's context window.
+const DEFAULT_PROMPT_BUDGET_TOKENS = 60000;
+const budgetFor = (llm) => llm.promptBudgetTokens || DEFAULT_PROMPT_BUDGET_TOKENS;
+
+// Removes a ```json / ``` wrapper the model sometimes adds around raw output.
+function stripCodeFence(text) {
+    let trimmed = String(text || "").trim();
+    if (trimmed.startsWith("```")) {
+        trimmed = trimmed.replace(/^```[a-zA-Z]*\s*/, "").replace(/```\s*$/, "").trim();
     }
-    return clientInstance;
+    return trimmed;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -28,41 +23,12 @@ function getWriterClient() {
 // This is the brain — it decides what pages to create, not just group files.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generateArchitectBlueprint(codeFiles, contextFiles, projectName) {
+async function generateArchitectBlueprint(codeFiles, contextFiles, projectName, llm) {
 
-    // Build a comprehensive source digest for the AI
-    let sourceDigest = "";
-
-    // Priority 1: README (the human-written project description)
-    const readme = contextFiles.find(f => f.type === "readme");
-    if (readme) {
-        sourceDigest += `\n### README.md\n${readme.code}\n`;
-    }
-
-    // Priority 2: package.json (dependencies, scripts, project metadata)
-    const pkg = contextFiles.find(f => f.type === "package");
-    if (pkg) {
-        sourceDigest += `\n### package.json\n${pkg.code}\n`;
-    }
-
-    // Priority 3: All code files (with paths for structure understanding)
-    for (const file of codeFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`\n${file.code.substring(0, 8000)}\n\`\`\`\n`;
-    }
-
-    // Priority 4: HTML files (for frontend-heavy projects)
-    const htmlFiles = contextFiles.filter(f => f.type === "html");
-    for (const file of htmlFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`html\n${file.code.substring(0, 5000)}\n\`\`\`\n`;
-    }
-
-    // Priority 5: CSS files
-    const cssFiles = contextFiles.filter(f => f.type === "style");
-    for (const file of cssFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`css\n${file.code.substring(0, 3000)}\n\`\`\`\n`;
+    // A digest of the codebase, most important files first, within the prompt budget.
+    const { text: sourceDigest, omitted } = buildSourceDigest({ codeFiles, contextFiles, budgetTokens: budgetFor(llm) });
+    if (omitted.length > 0) {
+        console.log(`[Architect] Prompt budget reached; ${omitted.length} files listed by name only.`);
     }
 
     const prompt = `You are the Documentation Architect at Mintlify. You design documentation sites that feel like they were written by a real human technical writer — not auto-generated.
@@ -140,28 +106,24 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 
     try {
         console.log(`\n🏛️  Super-Architect is designing the documentation site plan...`);
-        const response = await getWriterClient().models.generateContent({
-            model: config.gemini.writerModel,
-            contents: prompt,
-            config: {
-                maxOutputTokens: 8192,
-                temperature: 0.4
-            }
+        const response = await llm.client.generateText({
+            model: llm.writerModel,
+            prompt,
+            temperature: 0.4,
         });
-        let rawText = response.text.trim();
-
-        // Strip markdown backticks if AI hallucinates them
-        if (rawText.startsWith('```json')) {
-            rawText = rawText.replace(/^```json/, '').replace(/```$/, '').trim();
-        } else if (rawText.startsWith('```')) {
-            rawText = rawText.replace(/^```/, '').replace(/```$/, '').trim();
+        if (response.truncated) {
+            console.warn("[Architect] The response hit the output limit; the plan may be incomplete.");
         }
 
-        const blueprint = JSON.parse(rawText);
+        const blueprint = JSON.parse(stripCodeFence(response.text));
 
-        // Validate the structure
+        // Validate the structure, and drop pages missing the fields the writer needs
         if (!blueprint.pages || !Array.isArray(blueprint.pages)) {
             throw new Error("Blueprint missing 'pages' array");
+        }
+        blueprint.pages = blueprint.pages.filter((p) => p && p.slug && p.title && p.group);
+        if (blueprint.pages.length === 0) {
+            throw new Error("Blueprint has no usable pages");
         }
 
         console.log(`✅ Architect designed ${blueprint.pages.length} pages across the site.`);
@@ -169,7 +131,9 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 
         return blueprint;
     } catch (error) {
-        console.error("❌ Super-Architect failed:", error);
+        // A bad key or missing model would fail every later call too: stop the run.
+        if (isFatalLLMError(error)) throw error;
+        console.error("❌ Super-Architect failed:", error.message);
         // Fallback: generate a minimal 2-page plan
         return {
             projectName: projectName,
@@ -205,47 +169,40 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 // Each page is written differently based on its type and purpose.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint) {
+async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint, llm) {
 
     // Build the source context based on what the Architect requested
+    const budgetTokens = budgetFor(llm);
     let relevantSource = "";
 
-    if (pagePlan.sourceContext === "all") {
-        // Overview pages get everything (truncated)
-        const readme = allContextFiles.find(f => f.type === "readme");
-        if (readme) relevantSource += `### README.md\n${readme.code}\n\n`;
-
-        const pkg = allContextFiles.find(f => f.type === "package");
-        if (pkg) relevantSource += `### package.json\n${pkg.code}\n\n`;
-
-        for (const file of allCodeFiles) {
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
-        }
-
-        for (const file of allContextFiles.filter(f => f.type === "html" || f.type === "style")) {
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 3000)}\n\`\`\`\n\n`;
-        }
-    } else {
+    if (pagePlan.sourceContext !== "all" && typeof pagePlan.sourceContext === "string") {
         // Specific pages get targeted files
-        const targetNames = pagePlan.sourceContext.split(",").map(s => s.trim().toLowerCase());
-
-        for (const file of [...allCodeFiles, ...allContextFiles]) {
+        const targetNames = pagePlan.sourceContext.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const matches = (file) => {
             const fileName = file.path.split(/[/\\]/).pop().toLowerCase();
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            if (targetNames.some(t => fileName.includes(t) || shortPath.toLowerCase().includes(t))) {
-                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 6000)}\n\`\`\`\n\n`;
-            }
+            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/").toLowerCase();
+            return targetNames.some(t => fileName.includes(t) || shortPath.includes(t));
+        };
+        const targetedCode = allCodeFiles.filter(matches);
+        const targetedContext = allContextFiles.filter(matches);
+        if (targetedCode.length + targetedContext.length > 0) {
+            relevantSource = buildSourceDigest({
+                codeFiles: targetedCode,
+                contextFiles: targetedContext,
+                budgetTokens,
+                maxChars: { code: 6000, html: 6000, style: 6000 },
+            }).text;
         }
+    }
 
-        // If no specific files matched, provide everything as fallback
-        if (!relevantSource) {
-            for (const file of allCodeFiles) {
-                const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
-            }
-        }
+    // Overview pages, and pages whose files didn't match, get everything (truncated)
+    if (!relevantSource) {
+        relevantSource = buildSourceDigest({
+            codeFiles: allCodeFiles,
+            contextFiles: allContextFiles,
+            budgetTokens,
+            maxChars: { code: 4000, html: 3000, style: 3000 },
+        }).text;
     }
 
     // Build the navigation context so pages can reference each other
@@ -359,25 +316,27 @@ ${relevantSource}
     try {
         console.log(`\n✍️  Ghostwriter is crafting: "${pagePlan.title}" [${pagePlan.type}]...`);
 
-        const response = await getWriterClient().models.generateContent({
-            model: config.gemini.writerModel,
-            contents: prompt,
-            config: {
-                maxOutputTokens: 8192,
-                temperature: 0.5
-            }
+        const response = await llm.client.generateText({
+            model: llm.writerModel,
+            prompt,
+            temperature: 0.5,
         });
+        if (response.truncated) {
+            console.warn(`[Ghostwriter] "${pagePlan.title}" hit the output limit and may be cut off.`);
+        }
         const draftText = response.text;
 
         console.log(`✅ Ghostwriter drafted "${pagePlan.title}". Passing to Critic...`);
 
         // Pass to the editor for cleanup and validation
         const sourceCode = allCodeFiles.map(f => f.code).join("\n\n---\n\n").substring(0, 15000);
-        const finalPolishedText = await editDocs(draftText, sourceCode);
+        const finalPolishedText = await editDocs(draftText, sourceCode, llm);
 
         return finalPolishedText;
     } catch (error) {
-        console.error(`❌ Ghostwriter failed on "${pagePlan.title}":`, error);
+        // A bad key or missing model would fail every later page too: stop the run.
+        if (isFatalLLMError(error)) throw error;
+        console.error(`❌ Ghostwriter failed on "${pagePlan.title}":`, error.message);
         return null;
     }
 }
@@ -388,7 +347,7 @@ ${relevantSource}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // The old generateDocs function is preserved as a fallback
-async function generateDocs(file, codeMap, blueprint) {
+async function generateDocs(file, llm) {
     // Wrap the old single-file call into the new page-based system
     const pagePlan = {
         slug: file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, ''),
@@ -405,7 +364,7 @@ async function generateDocs(file, codeMap, blueprint) {
         pages: [pagePlan]
     };
 
-    return await generatePage(pagePlan, [file], [], dummyBlueprint);
+    return await generatePage(pagePlan, [file], [], dummyBlueprint, llm);
 }
 
 module.exports = { generateDocs, generatePage, generateArchitectBlueprint };

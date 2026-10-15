@@ -61,4 +61,12 @@ function codeFromStatus(status, providerType = "") {
     return "network";
 }
 
-module.exports = { LLMError, LLM_ERROR_CODES, codeFromStatus };
+// Errors the user has to fix (bad key, no credit, wrong model, no provider). Retrying the
+// next page of a run would fail the same way, so these stop the whole run.
+const FATAL = new Set(["invalid_key", "permission_denied", "quota_exceeded", "model_not_found", "not_configured", "invalid_base_url"]);
+
+function isFatalLLMError(error) {
+    return error instanceof LLMError && FATAL.has(error.code);
+}
+
+module.exports = { LLMError, LLM_ERROR_CODES, codeFromStatus, isFatalLLMError };

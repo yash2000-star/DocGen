@@ -12,6 +12,7 @@ export default function AiChat({ customTenant, customVersion }) {
 
     const [question, setQuestion] = useState("");
     const [answer, setAnswer] = useState("");
+    const [sources, setSources] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
 
     async function askAI() {
@@ -20,6 +21,7 @@ export default function AiChat({ customTenant, customVersion }) {
 
         setIsLoading(true);
         setAnswer("");
+        setSources([]);
 
         try {
             const res = await apiFetch(`/api/ask`, {
@@ -33,10 +35,12 @@ export default function AiChat({ customTenant, customVersion }) {
 
             const data = await res.json();
 
-            if(data.error) {
-                setAnswer("Error: " + data.error);
+            if (!res.ok || data.error) {
+                // Errors are a string, or { message } from the rate limiter.
+                setAnswer(typeof data.error === "string" ? data.error : data.error?.message || "Something went wrong.");
             } else {
                 setAnswer(data.answer);
+                setSources(data.sources || []);
             }
         } catch (error) {
             setAnswer("Warning: Could not connect to the backend server. ");
@@ -72,6 +76,18 @@ export default function AiChat({ customTenant, customVersion }) {
         <div style={{ marginTop: "15px", padding: "15px", backgroundColor: "#fff", border: "1px solid #e5e7eb", borderRadius: "6px", fontSize: "14px", lineHeight: "1.5", color: "#374151" }}>
           <strong>Answer:</strong>
           <p style={{ margin: "5px 0 0 0", whiteSpace: "pre-wrap" }}>{answer}</p>
+          {sources.length > 0 && (
+            <div style={{ marginTop: "12px", fontSize: "12px", color: "#6b7280" }}>
+              <strong>Sources</strong>
+              <ul style={{ margin: "4px 0 0 0", paddingLeft: "16px" }}>
+                {sources.map((s) => (
+                  <li key={s.route}>
+                    <a href={`/docs/${tenant}/${version}/${s.route}`} style={{ color: "#2563eb" }}>{s.title}</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>

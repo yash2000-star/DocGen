@@ -4,12 +4,17 @@ const { config } = require("../config");
 const supabase = require("../lib/supabase");
 const { sendSuccessEmail } = require("../emailService");
 const { generateProjectDocs, buildProject } = require("../services/generationPipeline");
+const { getPreviewLLM } = require("../services/aiCredentials");
+const { startRun, finishRun } = require("../services/buildEvents");
+const { describeAiError } = require("../ai/httpErrors");
 const { isSafeSegment } = require("../lib/paths");
 
 const router = express.Router();
 
 // PUBLIC ROUTE: No auth required, but strictly limited!
-// Generates a small preview (config.previewMaxPages pages) for a public GitHub repo.
+// Generates a small preview (config.preview.maxPages pages) for a public GitHub repo.
+// Anonymous visitors have no AI key, so this uses the server's own preview credential
+// (PREVIEW_AI_*). Without one the preview is off.
 router.post("/github", async (req, res) => {
     const tenantName  = typeof req.body.tenantName === "string" ? req.body.tenantName.trim() : "";
     const projectName = typeof req.body.projectName === "string" ? req.body.projectName.trim() : "";
@@ -23,6 +28,8 @@ router.post("/github", async (req, res) => {
 
     // The preview only ever documents the public GitHub repo matching the URL.
     const repoUrl = `https://github.com/${tenantName}/${projectName}`;
+
+    const llm = getPreviewLLM();
 
     // --- 1. Decide what to do based on the existing project row ---
     const { data: existingProject, error: searchError } = await supabase
@@ -58,6 +65,10 @@ router.post("/github", async (req, res) => {
             });
         }
 
+        if (!llm) {
+            return res.status(503).json({ error: "Free previews are turned off on this server. Sign in and connect your own AI provider to generate docs." });
+        }
+
         // A project someone has claimed is regenerated from their dashboard, not from here.
         if (existingProject.user_id) {
             return res.status(409).json({
@@ -70,6 +81,10 @@ router.post("/github", async (req, res) => {
             .update({ status: 'running', repo_url: repoUrl })
             .eq('id', existingProject.id);
     } else {
+        if (!llm) {
+            return res.status(503).json({ error: "Free previews are turned off on this server. Sign in and connect your own AI provider to generate docs." });
+        }
+
         // Brand New: Insert an orphan row (user_id is null until the owner signs in and claims it)
         const { error: insertError } = await supabase.from('projects').insert({
             tenant_name: tenantName,
@@ -96,14 +111,18 @@ router.post("/github", async (req, res) => {
         .eq('tenant_name', tenantName)
         .eq('project_name', projectName);
 
+    const runId = await startRun({ tenantName, projectName, eventType: 'preview', triggeredBy: 'public', provider: llm.provider, model: llm.writerModel });
+    let result;
+
     try {
         // --- 2. THE GENERATION PROCESS (preview is capped to save credits) ---
         console.log(`\n [Public API] Starting free preview request for ${repoUrl}...`);
-        await generateProjectDocs({
+        result = await generateProjectDocs({
             repoUrl,
             tenantName,
             projectName,
-            maxPages: config.previewMaxPages,
+            maxPages: config.preview.maxPages,
+            llm,
         });
 
         // --- 3. Wait for the build so the docs exist before we redirect ---
@@ -111,6 +130,7 @@ router.post("/github", async (req, res) => {
 
         // Mark as successful in DB ONLY AFTER the worker is completely done
         await setStatus('successful');
+        await finishRun(runId, { status: 'successful', filesCount: result.generatedCount, usage: result.usage });
 
         if (email && config.email.enabled) {
             sendSuccessEmail(email, tenantName, projectName);
@@ -125,11 +145,19 @@ router.post("/github", async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Public API Error:", error);
+        const ai = describeAiError(error);
+        console.error("Public API Error:", ai ? `${ai.code}: ${ai.message} ${ai.providerMessage || ''}` : error);
         await setStatus('failed');
+        await finishRun(runId, {
+            status: 'failed',
+            filesCount: result?.generatedCount || 0,
+            usage: error.usage || result?.usage,
+            errorMessage: ai ? ai.message : error.message,
+        });
         if (!res.headersSent) {
-            res.status(error.statusCode || 500).json({
-                error: error.statusCode ? error.message : "Failed to generate preview."
+            // Problems with the server's own AI credential are the administrator's, not the visitor's.
+            res.status(ai ? 503 : error.statusCode || 500).json({
+                error: ai ? "The free preview is unavailable right now. Try again later." : error.statusCode ? error.message : "Failed to generate preview."
             });
         }
     }

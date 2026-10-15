@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/auth";
 import { createProject } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
@@ -16,6 +16,19 @@ export default function NewProject() {
   const [projectId, setProjectId] = useState(null);
   
   const [currentProgressStep, setCurrentProgressStep] = useState(0);
+  // "checking" | "ready" | "missing" (no provider connected) | "disabled" (server can't store keys)
+  const [aiStatus, setAiStatus] = useState("checking");
+
+  // Docs are written with the user's own AI provider, so check one is connected.
+  useEffect(() => {
+    apiFetch("/api/ai/credentials")
+      .then(async (res) => {
+        if (res.status === 503) return setAiStatus("disabled");
+        const data = await res.json().catch(() => ({}));
+        setAiStatus(res.ok && data.credentials?.length > 0 ? "ready" : "missing");
+      })
+      .catch(() => setAiStatus("ready")); // Backend unreachable: let the submit report it.
+  }, []);
 
   const progressSteps = [
     "Cloning repository...",
@@ -102,6 +115,7 @@ export default function NewProject() {
     .then(async res => {
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
+          if (data.code === "ai_not_connected") setAiStatus("missing");
           throw new Error(data.error || `Generation failed (HTTP ${res.status}).`);
         }
         // AI Phase is done, Background Factory Worker is now compiling!
@@ -189,6 +203,19 @@ export default function NewProject() {
             </div>
           )}
 
+          {step === "form" && (aiStatus === "missing" || aiStatus === "disabled") && (
+            <div data-testid="ai-provider-notice" style={{ marginBottom: "24px", padding: "14px 16px", backgroundColor: "#eff6ff", color: "#1e3a8a", borderRadius: "8px", fontSize: "14px", border: "1px solid #bfdbfe" }}>
+              {aiStatus === "missing" ? (
+                <>
+                  <strong>Connect your AI provider first.</strong> DocGen writes your docs with your own AI account (Claude, OpenAI, Gemini, OpenRouter or a self-hosted model).{" "}
+                  <Link to="/settings/ai" style={{ color: "#1d4ed8", fontWeight: 600 }}>Connect a provider →</Link>
+                </>
+              ) : (
+                <>Doc generation isn't enabled on this server yet. The administrator needs to set <code>AI_KEY_ENCRYPTION_KEY</code>.</>
+              )}
+            </div>
+          )}
+
           {step === "form" && (
             <form onSubmit={handleSubmit}>
               <h2 style={{ fontSize: "24px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Import Repository</h2>
@@ -206,7 +233,7 @@ export default function NewProject() {
 
               <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
                 <button type="button" onClick={() => navigate("/dashboard")} style={{ padding: "10px 16px", background: "none", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>Cancel</button>
-                <button type="submit" style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>Generate Docs</button>
+                <button type="submit" disabled={aiStatus !== "ready"} style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: aiStatus === "ready" ? "pointer" : "not-allowed", opacity: aiStatus === "ready" ? 1 : 0.5 }}>Generate Docs</button>
               </div>
             </form>
           )}

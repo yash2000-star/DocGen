@@ -1,12 +1,9 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { config } = require("./config");
+const { isFatalLLMError } = require("./ai/errors");
 
-const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-
-// ✅ Use flash-lite for editor — saves quota, still accurate for cleanup work
-const model = genAI.getGenerativeModel({ model: config.gemini.editorModel });
-
-async function editDocs(draftMdx, sourceCode = null) {
+// The critic runs on the user's own provider with their critic model, which is usually
+// a cheaper model than the writer: cleanup and fact-checking need less reasoning.
+//   llm: { client, criticModel } from getUserLLM()
+async function editDocs(draftMdx, sourceCode = null, llm) {
 
   // ✅ Include source code context if provided so editor can check accuracy
   const sourceContext = sourceCode
@@ -48,14 +45,17 @@ ${draftMdx}
 
 OUTPUT ONLY THE FINAL POLISHED MDX. NO EXPLANATION. NO PREAMBLE. NO WRAPPER CODE BLOCKS.`;
 
-  // Without a Gemini API key the critic can't run, so keep the writer's draft.
-  if (!config.ai.geminiEnabled) return draftMdx;
-
   try {
     console.log(`\n🕵️  Critic is reviewing the draft...`);
 
-    const result = await model.generateContent(prompt);
-    let text = result.response.text().trim();
+    const result = await llm.client.generateText({ model: llm.criticModel, prompt });
+    let text = result.text.trim();
+
+    // An empty or cut-off review is worse than the draft it was reviewing.
+    if (!text || result.truncated) {
+      console.warn("⚠️  Critic returned an empty or truncated review; keeping the draft.");
+      return draftMdx;
+    }
 
     // ✅ Markdown Fence Sanitizer — removes opening ```mdx or ```
     if (text.startsWith("```")) {
@@ -83,7 +83,9 @@ OUTPUT ONLY THE FINAL POLISHED MDX. NO EXPLANATION. NO PREAMBLE. NO WRAPPER CODE
     return text;
 
   } catch (error) {
-    console.error("❌ Critic failed:", error);
+    // A bad key or missing model must stop the run, not be hidden behind the draft.
+    if (isFatalLLMError(error)) throw error;
+    console.error("❌ Critic failed:", error.message);
     return draftMdx; // fallback — never break the build
   }
 }

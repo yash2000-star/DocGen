@@ -14,13 +14,10 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
-    "@anthropic-ai/vertex-sdk": "^0.14.4",
     "@google/genai": "^1.48.0",
-    "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.117.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
-    "cosine-similarity": "^1.0.1",
     "csurf": "^1.11.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",

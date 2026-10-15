@@ -5,24 +5,10 @@
 const express = require("express");
 const { listProviders } = require("../ai/providers");
 const { LLMError } = require("../ai/errors");
+const { LLM_STATUS } = require("../ai/httpErrors");
 const credentials = require("../services/aiCredentials");
 const { createRateLimiter } = require("../lib/rateLimit");
 const { config } = require("../config");
-
-// HTTP status for each LLMError code.
-const LLM_STATUS = {
-    invalid_key: 400,
-    permission_denied: 400,
-    quota_exceeded: 400,
-    model_not_found: 400,
-    bad_request: 400,
-    refused: 400,
-    invalid_base_url: 400,
-    not_configured: 400,
-    rate_limited: 429,
-    provider_unavailable: 502,
-    network: 502,
-};
 
 function sendError(res, error) {
     if (error instanceof LLMError) {

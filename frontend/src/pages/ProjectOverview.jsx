@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { supabase } from "../lib/auth";
@@ -110,10 +110,19 @@ function ActionButtons({ project, onRebuild, userRole }) {
 }
 
 const eventLabels = {
+  generation:     'Docs Generation',
+  preview:        'Free Preview',
+  webhook:        'GitHub Push Update',
   webhook_push:   'Webhook Push',
   manual_update:  'Manual Update',
   initial_import: 'Initial Import',
 };
+
+// 1234 → "1.2k"
+function formatTokens(n) {
+  if (!n) return '0';
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
+}
 
 function ActivityRow({ event }) {
   const [open, setOpen] = useState(false);
@@ -156,9 +165,12 @@ function ActivityRow({ event }) {
           </span>
         </div>
 
-        {/* Column 3: Changes (Empty by default in Mintlify unless specified) */}
+        {/* Column 3: Pages written and AI tokens used */}
         <div style={{ fontSize: '13px', color: '#64748b' }}>
-          {event.files_count > 0 ? `${event.files_count} files` : '-'}
+          {event.files_count > 0 ? `${event.files_count} page${event.files_count === 1 ? '' : 's'}` : '-'}
+          {(event.input_tokens > 0 || event.output_tokens > 0) && (
+            <span title="AI tokens used (input + output)"> · {formatTokens((event.input_tokens || 0) + (event.output_tokens || 0))} tokens</span>
+          )}
         </div>
 
         {/* Column 4: Chevron */}
@@ -170,6 +182,15 @@ function ActivityRow({ event }) {
       {open && (
         <div style={{ padding: '16px 24px 16px 76px', fontSize: '13px', color: '#64748b', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Triggered by:</strong> <span>{event.triggered_by || 'system'}</span></div>
+          {event.model && (
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>AI model:</strong> <span>{event.model}{event.provider ? ` (${event.provider})` : ''}</span></div>
+          )}
+          {(event.input_tokens > 0 || event.output_tokens > 0) && (
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Tokens:</strong> <span>{event.input_tokens.toLocaleString()} in · {event.output_tokens.toLocaleString()} out</span></div>
+          )}
+          {event.error_message && (
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155', flexShrink: 0 }}>Error:</strong> <span style={{ color: '#b91c1c' }}>{event.error_message}</span></div>
+          )}
           <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Event ID:</strong> <span style={{ fontFamily: 'monospace' }}>{event.id}</span></div>
         </div>
       )}
@@ -186,6 +207,11 @@ export default function ProjectOverview() {
   const [userRole, setUserRole] = useState("viewer");
   const [isHovered, setIsHovered] = useState(false);
 
+  const loadEvents = useCallback(async () => {
+    const { data: eventsData } = await supabase.from('build_events').select('*').eq('project_id', id).order('created_at', { ascending: false }).limit(20);
+    setEvents(eventsData || []);
+  }, [id]);
+
   useEffect(() => {
     const fetchData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -198,8 +224,7 @@ export default function ProjectOverview() {
       const role = await getUserRole(id);
       setUserRole(role);
 
-      const { data: eventsData } = await supabase.from('build_events').select('*').eq('project_id', id).order('created_at', { ascending: false }).limit(20);
-      setEvents(eventsData || []);
+      await loadEvents();
       
       setLoading(false);
     };
@@ -213,12 +238,14 @@ export default function ProjectOverview() {
         { event: 'UPDATE', schema: 'public', table: 'projects', filter: `id=eq.${id}` },
         (payload) => {
           setProject(payload.new);
+          // A status change means a run started or finished: refresh the activity feed.
+          loadEvents();
         }
       )
       .subscribe();
 
     return () => supabase.removeChannel(subscription);
-  }, [id]);
+  }, [id, loadEvents]);
 
   const handleRegenerate = async () => {
     await updateProjectStatus(project.id, 'building', 0);

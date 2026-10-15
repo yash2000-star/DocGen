@@ -17,15 +17,14 @@ const helmet = require('helmet');
 const crypto = require('crypto');
 const cloneRepo = require("./gitServices");
 const { generateDocs } = require("./aiWriter");
-const analyzeRepo = require("./repoAnalyzer");
 const { generateProjectDocs, buildProject } = require("./services/generationPipeline");
 const { DOCS_DIR, DIST_DIR, isSafeSegment } = require("./lib/paths");
 const supabase = require("./lib/supabase");
-
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-const embeddingModel = genAI.getGenerativeModel({ model: config.gemini.embeddingModel });
+const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
+const { createRateLimiter } = require("./lib/rateLimit");
+const { startRun, finishRun } = require("./services/buildEvents");
+const { describeAiError } = require("./ai/httpErrors");
+const { meterClient } = require("./ai/usage");
 
 // Billing is optional: Razorpay is only set up when its keys are present.
 let razorpay = null;
@@ -52,8 +51,8 @@ app.use(cors({
 
 // --- WEBHOOK RAW BODY EXCEPTION ---
 app.use((req, res, next) => {
-  if (req.path === '/api/billing/webhook') {
-    // Keep raw body for Razorpay signature verification
+  if (req.path === '/api/billing/webhook' || req.path === '/api/webhook') {
+    // Keep the raw body for Razorpay and GitHub signature verification
     express.raw({ type: 'application/json' })(req, res, next);
   } else {
     // For all other routes, parse JSON normally
@@ -166,7 +165,7 @@ app.use(helmet({
       scriptSrc:   ["'self'", "'unsafe-eval'"],
       styleSrc:    ["'self'", "'unsafe-inline'"],
       imgSrc:      ["'self'", 'data:', 'https:'],
-      connectSrc:  ["'self'", 'https://*.supabase.co', 'https://generativelanguage.googleapis.com'],
+      connectSrc:  ["'self'", 'https://*.supabase.co'],
       frameSrc:    ["'self'"]
     },
   },
@@ -424,9 +423,29 @@ app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async 
   }
 });
 
-// Webhook stays public so GitHub can ping it without a login token
+// GitHub push webhook: regenerates docs for changed files with the project owner's AI key.
+// No login token, so every delivery must carry GitHub's signature for GITHUB_WEBHOOK_SECRET;
+// otherwise anyone could trigger generation and spend the owner's AI credits.
+function hasValidGithubSignature(req) {
+    const signature = String(req.headers['x-hub-signature-256'] || '');
+    const expected = 'sha256=' + crypto.createHmac('sha256', config.github.webhookSecret).update(req.body).digest('hex');
+    return signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+}
+
 app.post("/api/webhook", async (req, res) => {
-    const payload = req.body;
+    if (!config.github.webhookSecret) {
+        return res.status(503).json({ message: "GitHub webhook is not configured on this server." });
+    }
+    if (!Buffer.isBuffer(req.body) || !hasValidGithubSignature(req)) {
+        return res.status(401).json({ message: "Invalid or missing GitHub signature." });
+    }
+
+    let payload;
+    try {
+        payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+        return res.status(400).json({ message: "Invalid JSON payload." });
+    }
 
     if (req.headers['x-github-event'] === 'ping') {
         console.log("👋 [Webhook] Received GitHub ping. The tunnel is perfectly connected!");
@@ -464,6 +483,35 @@ app.post("/api/webhook", async (req, res) => {
         return res.status(200).json({ message: "No relevant files changed." });
     }
 
+    // Updates are written with the project owner's own AI key.
+    const { data: project } = await supabase
+        .from('projects')
+        .select('user_id')
+        .eq('tenant_name', tenantName)
+        .eq('project_name', projectName)
+        .maybeSingle();
+    if (!project?.user_id) {
+        return res.status(200).json({ message: "No project owner to write docs for. Skipping." });
+    }
+
+    let llm;
+    try {
+        llm = await getUserLLM(project.user_id);
+    } catch (error) {
+        const ai = describeAiError(error);
+        if (!ai) throw error;
+        console.log(`[Webhook] Skipping ${tenantName}/${projectName}: ${ai.message}`);
+        return res.status(200).json({ message: `Skipped: ${ai.message}` });
+    }
+
+    // GitHub gives up after 10 seconds, so accept now and write the docs in the background.
+    res.status(202).json({ message: `Updating docs for ${filesToProcess.length} changed files in the background.` });
+
+    const runId = await startRun({ tenantName, projectName, eventType: 'webhook', triggeredBy: 'github', provider: llm.provider, model: llm.writerModel });
+    const { client: meteredClient, totals: usage } = meterClient(llm.client);
+    const runLlm = { ...llm, client: meteredClient };
+    let generatedCount = 0;
+
     try {
         console.log(`\n [Webhook] Detected changes in ${filesToProcess.length} files. Starting targeted update...`);
 
@@ -474,49 +522,41 @@ app.post("/api/webhook", async (req, res) => {
             fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        let generatedCount = 0;
-
         for (const relativeFilePath of filesToProcess) {
             const fullPath = path.join(downloadedFolderPath, relativeFilePath);
+            // Only plain paths inside the clone (a crafted payload could contain "../").
+            if (!fullPath.startsWith(downloadedFolderPath + path.sep) || !fs.existsSync(fullPath)) continue;
 
-            if (fs.existsSync(fullPath)) {
-                const content = fs.readFileSync(fullPath, "utf-8");
-                const fileObj = { path: fullPath, code: content };
-                
-                const codeMap = analyzeRepo(downloadedFolderPath);
-                const markdownOutput = await generateDocs(fileObj, codeMap);
+            const content = fs.readFileSync(fullPath, "utf-8");
+            const fileObj = { path: fullPath, code: content };
 
-                if (markdownOutput) {
-                   const parsedPath = path.parse(relativeFilePath);
-                   const nestedTargetDir = path.join(targetDir, parsedPath.dir);
-                   
-                   if (!fs.existsSync(nestedTargetDir)) {
-                    fs.mkdirSync(nestedTargetDir, { recursive: true });
-                   }
+            const markdownOutput = await generateDocs(fileObj, runLlm);
 
-                   const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
-                   fs.writeFileSync(mdFilePath, markdownOutput);
+            if (markdownOutput) {
+               const parsedPath = path.parse(relativeFilePath);
+               const nestedTargetDir = path.join(targetDir, parsedPath.dir);
 
-                   console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
-                   generatedCount++;
-                }
+               if (!fs.existsSync(nestedTargetDir)) {
+                fs.mkdirSync(nestedTargetDir, { recursive: true });
+               }
+
+               const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
+               fs.writeFileSync(mdFilePath, markdownOutput);
+
+               console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
+               generatedCount++;
             }
         }
 
         console.log("[webhook] Waking up the factory Worker...");
-        
-        // Respond IMMEDIATELY to prevent GitHub webhook timeout
-        res.status(200).json({ message: `Successfully updated ${generatedCount} files. Build running in background.` });
-
-        buildProject(tenantName, projectName)
-            .then(() => console.log("Targeted webhook update complete!"))
-            .catch((err) => console.error("Webhook Build failed:", err.message));
+        await buildProject(tenantName, projectName);
+        console.log("Targeted webhook update complete!");
+        await finishRun(runId, { status: 'successful', filesCount: generatedCount, usage });
 
     } catch (error) {
-        console.error("Webhook Error:", error);
-        if (!res.headersSent) {
-            res.status(500).json({ error: "Failed to process webhooks." });
-        }
+        const ai = describeAiError(error);
+        console.error("Webhook Error:", ai ? ai.message : error);
+        await finishRun(runId, { status: 'failed', filesCount: generatedCount, usage, errorMessage: ai ? ai.message : error.message });
     }
 });
 
@@ -536,10 +576,23 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         .eq('tenant_name', tenantName)
         .eq('project_name', projectName);
 
+    // Docs are written with the AI key of whoever starts the run.
+    let llm;
+    try {
+        llm = await getUserLLM(req.user.id);
+    } catch (error) {
+        const ai = describeAiError(error);
+        if (!ai) throw error;
+        await setStatus('failed');
+        return res.status(ai.status).json({ error: ai.message, code: ai.code });
+    }
+
+    const runId = await startRun({ tenantName, projectName, eventType: 'generation', triggeredBy: 'dashboard', provider: llm.provider, model: llm.writerModel });
+
     try {
         await setStatus('running');
 
-        const { generatedCount } = await generateProjectDocs({ repoUrl, tenantName, projectName });
+        const { generatedCount, usage } = await generateProjectDocs({ repoUrl, tenantName, projectName, llm });
 
         // Increment Generation Count
         await supabase.rpc('increment_usage', {
@@ -552,7 +605,8 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
             message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
             fileProcessed: generatedCount,
             tenant: tenantName,
-            version: projectName
+            version: projectName,
+            usage,
         });
 
         console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
@@ -560,18 +614,28 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
             .then(async () => {
                 console.log("Factory Worker finished successfully!");
                 await setStatus('successful');
+                await finishRun(runId, { status: 'successful', filesCount: generatedCount, usage });
             })
             .catch(async (err) => {
                 console.error("Factory Build failed:", err.message);
                 await setStatus('failed');
+                await finishRun(runId, { status: 'failed', filesCount: generatedCount, usage, errorMessage: `Build failed: ${err.message}` });
             });
 
     } catch (error) { 
-        console.error("GitHub API Error", error);
+        const ai = describeAiError(error);
+        console.error("GitHub API Error", ai ? `${ai.code}: ${ai.message} ${ai.providerMessage || ''}` : error);
         await setStatus('failed');
 
+        const message = ai ? ai.message : error.statusCode ? error.message : "Failed to process the GitHub repository.";
+        await finishRun(runId, {
+            status: 'failed',
+            usage: error.usage,
+            errorMessage: ai?.providerMessage ? `${message} (${ai.providerMessage})` : message,
+        });
+
         if (!res.headersSent) {
-            res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : "Failed to process the GitHub repository." });
+            res.status(ai?.status || error.statusCode || 500).json({ error: message, code: ai?.code });
         }
     }
 });
@@ -696,12 +760,12 @@ app.delete('/api/projects/:tenant/:version', csrfProtection, requireAuth, requir
     }
 
     const { error: supaErr } = await supabase
-        .from('doc_vectors')
+        .from('doc_chunks')
         .delete()
         .eq('tenant', tenant)
         .eq('version', version);
         
-    if (supaErr) return res.status(500).json({ error: 'Failed to delete vectors' });
+    if (supaErr) return res.status(500).json({ error: 'Failed to delete search index' });
 
     const docsDir = path.join(DOCS_DIR, tenant, version);
     const distDir = path.join(DIST_DIR, tenant, version);
@@ -821,51 +885,82 @@ app.get("/api/domain/:customDomain", async (req, res) => {
     }
 });
 
-app.post("/api/ask", async (req, res) => {
+// --- ASK AI: answers readers' questions from the docs ---
+// Readers are anonymous, but every answer is paid for by the project owner's AI key,
+// so requests are limited per visitor and per docs site.
+const askLimitPerVisitor = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20, key: (req) => req.ip });
+const askLimitPerSite = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 200, key: (req) => `${req.body?.tenant}/${req.body?.version}` });
+const ASK_UNAVAILABLE = "Ask AI isn't set up for these docs yet.";
+
+app.post("/api/ask", askLimitPerVisitor, askLimitPerSite, async (req, res) => {
+    const question = typeof req.body.question === 'string' ? req.body.question.trim().slice(0, 1000) : '';
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+
+    if (!question || !tenant || !version) {
+        return res.status(400).json({ error: "Missing question, tenant, or version." });
+    }
+
     try {
-        const { question, tenant, version } = req.body;
+        const { data: project } = await supabase
+            .from('projects')
+            .select('user_id')
+            .eq('tenant_name', tenant)
+            .eq('project_name', version)
+            .maybeSingle();
+        if (!project) return res.status(404).json({ error: "These docs don't exist." });
 
-        if (!question || !tenant || !version) {
-            return res.status(400).json({ error: "Missing question, tenant, or version." });
+        // The owner's AI answers; unclaimed preview sites use the server's preview AI, if any.
+        let llm = null;
+        if (project.user_id) {
+            try {
+                llm = await getUserLLM(project.user_id);
+            } catch (error) {
+                if (!describeAiError(error)) throw error;
+            }
+        } else {
+            llm = getPreviewLLM();
         }
+        if (!llm) return res.status(503).json({ error: ASK_UNAVAILABLE });
 
-        if (!config.ai.geminiEnabled) {
-            return res.status(503).json({ error: "Ask AI is not configured on this server." });
-        }
-
-        console.log(`\n Calculating math vector for question: "${question}"`);
-
-        const embedResult = await embeddingModel.embedContent(question);
-        const questionVector = embedResult.embedding.values;
-
-        const { data: topChunks, error: supabaseError } = await supabase.rpc('match_vectors', {
-            query_embedding: questionVector,
-            match_threshold: 0.1,
-            match_count: 3,
+        // Keyword search over the docs' sections.
+        const { data: chunks, error: searchError } = await supabase.rpc('search_doc_chunks', {
             search_tenant: tenant,
-            search_version: version
+            search_version: version,
+            query: question,
+            match_count: 5,
         });
-
-        if (supabaseError) {
-            console.error("Supabase Search Error:", supabaseError);
-            return res.status(500).json({ error: "Database search failed."});
+        if (searchError) {
+            console.error("Ask AI search error:", searchError);
+            return res.status(500).json({ error: "Search failed." });
         }
 
-        console.log("Top 3 Cloud Match Scores:");
-        topChunks.forEach((c, i) => console.log(` ${ i + 1}: Score ${c.similarity.toFixed(3)} -> ${c.text.substring(0,40)}...`));
+        // Nothing relevant: answer without spending the owner's AI credits.
+        if (!chunks || chunks.length === 0) {
+            return res.json({ answer: "I'm sorry, I cannot find the answer to that in the current documentation.", sources: [] });
+        }
 
-        const contextString = topChunks.map(c => c.text).join("\n\n");
+        const contextString = chunks.map((c) => `### ${c.title}\n(Page: ${c.route})\n${c.text}`).join("\n\n");
+        const answer = await askAI(question, contextString, llm);
 
-        console.log("Sending context to Gemini...");
-        const answer = await askAI(question, contextString);
+        if (project.user_id) {
+            supabase.rpc('increment_usage', { p_user_id: project.user_id, p_month: new Date().toISOString().slice(0, 7), p_field: 'ai_queries' })
+                .then(({ error }) => error && console.error("Ask AI usage count failed:", error.message));
+        }
 
-        res.json({ answer: answer });
+        res.json({ answer, sources: chunks.map((c) => ({ title: c.title, route: c.route })) });
 
     } catch (error) {
+        const ai = describeAiError(error);
+        if (ai) {
+            // Readers don't need the owner's provider details; the log keeps them.
+            console.error(`Ask AI provider error for ${tenant}/${version}: ${ai.code} ${ai.providerMessage || ai.message}`);
+            return res.status(502).json({ error: "Ask AI couldn't answer right now. Try again in a moment." });
+        }
         console.error("Ask API Error:", error);
         res.status(500).json({ error: "Internal server error." });
     }
-})
+});
 
 // --- GLOBAL ERROR HANDLER ---
 app.use((err, req, res, next) => {
