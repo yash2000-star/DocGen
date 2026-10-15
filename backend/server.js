@@ -24,6 +24,7 @@ const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
 const { createRateLimiter } = require("./lib/rateLimit");
 const { startRun, finishRun } = require("./services/buildEvents");
 const { describeAiError } = require("./ai/httpErrors");
+const { compileSafeMdx } = require("./mdx/safeMdx");
 const { meterClient } = require("./ai/usage");
 
 // Billing is optional: Razorpay is only set up when its keys are present.
@@ -193,8 +194,9 @@ app.use((req, res, next) => {
 
 app.use("/api/static", express.static(DIST_DIR));
 
-// --- NEW (PHASE 3): DYNAMIC DOCS FETCHING ROUTE ---
-app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
+// --- DOCS PAGES ---
+// Resolves /:tenant/:version/<page path> to a file in dist/, or answers 400/404 itself.
+function resolveDistPage(req, res, extension) {
     const { tenant, version } = req.params;
 
     // Express 5 gives the wildcard as an array of path segments, e.g. ['guides', 'setup']
@@ -207,21 +209,42 @@ app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
 
     // Every segment must be a plain name, so the path can't escape dist/
     if (![tenant, version, ...segments].every(isSafeSegment)) {
-        return res.status(400).json({ error: "Invalid document path.", requestedPath: docPath });
+        res.status(400).json({ error: "Invalid document path.", requestedPath: docPath });
+        return null;
     }
 
-    // Construct the absolute path. We enforce the .mdx extension here!
-    const absolutePath = path.join(DIST_DIR, tenant, version, ...segments) + '.mdx';
-
-    if (fs.existsSync(absolutePath)) {
-        res.type('text/markdown').sendFile(absolutePath);
-    } else {
+    const absolutePath = path.join(DIST_DIR, tenant, version, ...segments) + extension;
+    if (!fs.existsSync(absolutePath)) {
         res.status(404).json({
             error: "Document Not Found",
             message: `The documentation page '${docPath}' could not be found. Check docs.json for typos.`,
             requestedPath: docPath
         });
+        return null;
     }
+    return absolutePath;
+}
+
+// Raw MDX, for AI agents and llms.txt readers.
+app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
+    const file = resolveDistPage(req, res, '.mdx');
+    if (file) res.type('text/markdown').sendFile(file);
+});
+
+// The compiled, code-free page the docs viewer renders (see backend/mdx/safeMdx.js).
+app.get('/api/page/:tenant/:version/*docPath', (req, res) => {
+    // Sites built before pages were pre-compiled only have the .mdx: compile it now and
+    // save the result, so they keep working without a rebuild.
+    const mdxFile = resolveDistPage(req, res, '.mdx');
+    if (!mdxFile) return;
+    const pageFile = mdxFile.replace(/\.mdx$/, '.page.json');
+    if (!fs.existsSync(pageFile)) {
+        const source = fs.readFileSync(mdxFile, 'utf8');
+        const compiled = compileSafeMdx(source);
+        const title = (source.match(/^#\s+(.+)$/m) || [])[1] || path.basename(mdxFile, '.mdx');
+        fs.writeFileSync(pageFile, JSON.stringify(compiled.ok ? { title, tree: compiled.tree } : { title, error: compiled.error }));
+    }
+    res.type('application/json').sendFile(pageFile);
 });
 
 app.use('/api/public', publicRoutes);
@@ -785,6 +808,13 @@ app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'
 
     if (!tenant || !version || !fileName || typeof content !== 'string' || !content) {
         return res.status(400).json({ error: "Missing or invalid required fields" });
+    }
+
+    // Don't publish a page the viewer can't render.
+    const compiled = compileSafeMdx(content);
+    if (!compiled.ok) {
+        const { message, line, column } = compiled.error;
+        return res.status(400).json({ error: `This page has a syntax error${line ? ` on line ${line}` : ''}: ${message}`, line, column });
     }
 
     const targetDir = path.join(DOCS_DIR, tenant, version);

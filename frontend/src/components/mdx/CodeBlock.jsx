@@ -35,7 +35,7 @@ const parseHighlightLines = (linesStr) => {
 export default function CodeBlock({ children, language = "javascript", title, highlight = "" }) {
   const [copied, setCopied] = useState(false);
 
-  const rawCode = typeof children === 'string' ? children : children?.props?.children || "";
+  const rawCode = (typeof children === 'string' ? children : children?.props?.children || "").replace(/\n+$/, "");
   const highlightedLineNumbers = parseHighlightLines(highlight);
 
   const handleCopy = () => {
@@ -74,7 +74,7 @@ export default function CodeBlock({ children, language = "javascript", title, hi
         <SyntaxHighlighter
           language={language}
           style={vscDarkPlus}
-          showLineNumbers={true}
+          showLineNumbers={false}
           wrapLines={true}
           customStyle={{
             margin: 0,

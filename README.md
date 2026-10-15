@@ -16,8 +16,8 @@ supabase/   Database schema and Row-Level Security policies
 
 1. You connect your AI provider and import `https://github.com/<owner>/<repo>` from the dashboard.
 2. The backend clones it and, with your AI key, plans 5–10 pages and writes them to `docs/<owner>/<repo>/`. Large repos are summarized to fit the model: the most important files go in full, the rest are listed by name.
-3. `build/build.js` compiles the pages into `dist/` and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
-4. The docs are published at `/docs/<owner>/<repo>`. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
+3. Every generated page must compile; one that doesn't goes back to your critic model with the error to fix. `build/build.js` then compiles each page on the server into a code-free tree (no `import`/`export`, `{expressions}` or event handlers; only known components and safe links) and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
+4. The docs are published at `/docs/<owner>/<repo>`. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
 5. Each run is listed in the project's activity feed with the model used and the tokens it cost.
 
 ## Run it locally
@@ -114,6 +114,7 @@ npm --prefix backend test
 | "Connect an AI provider in Settings → AI providers first" | Connect a provider at `/settings/ai`. |
 | A run fails with "The API key was rejected" or "out of credit" | Fix the key or billing with your provider, then save the key again in **AI providers**. The activity feed shows the provider's message. |
 | Ask AI says it isn't set up for these docs | The project owner hasn't connected an AI provider. |
+| A page says "This page has a syntax error on line N" | The page's MDX doesn't compile, usually after a manual edit. Fix that line in the editor, which refuses to publish pages with syntax errors. |
 | Sign-in redirects to the wrong place | Add `http://localhost:5173/**` to Supabase redirect URLs. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
@@ -130,6 +131,9 @@ npm --prefix backend test
 | `backend/ai/` | One client interface for Anthropic, OpenAI, Gemini and OpenAI-compatible providers |
 | `backend/services/aiCredentials.js` | Encrypted storage and testing of users' own AI keys; `getUserLLM()` for generation |
 | `backend/ai/sourceDigest.js` | Fits large repos into the prompt budget, most important files first |
+| `backend/mdx/components.js` | The docs components pages may use, shared by the prompts, the compiler and the viewer |
+| `backend/mdx/safeMdx.js` | Compiles a page into a code-free render tree |
+| `frontend/src/components/mdx/SafeMdxRenderer.jsx` | Draws a compiled page in the browser |
 | `backend/config.js` | All environment configuration |
 | `build/build.js` | Static build, search index and Ask AI section index |
 | `frontend/src/pages/DocEngine.jsx` | Public docs viewer |

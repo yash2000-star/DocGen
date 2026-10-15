@@ -1,21 +1,14 @@
 const editDocs = require("./aiEditor");
 const { isFatalLLMError } = require("./ai/errors");
 const { buildSourceDigest } = require("./ai/sourceDigest");
+const { stripCodeFence } = require("./ai/text");
+const { ensureValidMdx } = require("./mdx/repair");
 
 // Every function here takes `llm`: the user's own AI provider, from getUserLLM().
 //   { client, writerModel, criticModel, promptBudgetTokens? }
 // Prompt size is capped so large repos fit in the model's context window.
 const DEFAULT_PROMPT_BUDGET_TOKENS = 60000;
 const budgetFor = (llm) => llm.promptBudgetTokens || DEFAULT_PROMPT_BUDGET_TOKENS;
-
-// Removes a ```json / ``` wrapper the model sometimes adds around raw output.
-function stripCodeFence(text) {
-    let trimmed = String(text || "").trim();
-    if (trimmed.startsWith("```")) {
-        trimmed = trimmed.replace(/^```[a-zA-Z]*\s*/, "").replace(/```\s*$/, "").trim();
-    }
-    return trimmed;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PHASE 1: THE SUPER-ARCHITECT
@@ -257,7 +250,7 @@ Use these components generously to make the documentation feel rich and interact
 ### Cards (use for feature highlights, navigation, module overviews)
 \`\`\`mdx
 <CardGroup cols={2}>
-  <Card title="Feature" icon="⚡">
+  <Card title="Feature" icon="zap">
     Description of the feature.
   </Card>
 </CardGroup>
@@ -285,6 +278,9 @@ curl -X GET https://api.example.com/users
 - \`<Badge>NEW</Badge>\` — inline labels
 - \`<Tooltip tip="explanation">term</Tooltip>\` — hover definitions
 
+### Icons
+Card and Accordion \`icon\` values are icon names, never emoji: rocket, zap, code, book-open, settings, terminal, key, shield, database, globe, package, wrench, file-text, users, layers.
+
 ## WRITING STYLE RULES (THIS IS CRITICAL)
 
 1. **Be concise.** Short paragraphs (2-3 sentences max). No fluff. No filler.
@@ -310,8 +306,9 @@ ${relevantSource}
 ## OUTPUT RULES
 1. Output ONLY raw MDX starting with the --- frontmatter. No preamble. No wrapper fences.
 2. Never invent component names not in the toolkit above.
-3. Every code block must have a language tag.
-4. The document should feel like a premium, hand-crafted page — not an AI dump.`;
+3. No import/export statements and no JavaScript in {braces}: prop values are plain text, numbers or JSON. Code in a page is removed before publishing.
+4. Every code block must have a language tag.
+5. The document should feel like a premium, hand-crafted page — not an AI dump.`;
 
     try {
         console.log(`\n✍️  Ghostwriter is crafting: "${pagePlan.title}" [${pagePlan.type}]...`);
@@ -332,7 +329,9 @@ ${relevantSource}
         const sourceCode = allCodeFiles.map(f => f.code).join("\n\n---\n\n").substring(0, 15000);
         const finalPolishedText = await editDocs(draftText, sourceCode, llm);
 
-        return finalPolishedText;
+        // Only publish pages that compile; broken ones go back to the critic to fix.
+        const checked = await ensureValidMdx(finalPolishedText, llm, pagePlan.title);
+        return checked ? checked.mdx : null;
     } catch (error) {
         // A bad key or missing model would fail every later page too: stop the run.
         if (isFatalLLMError(error)) throw error;

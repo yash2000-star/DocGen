@@ -10,6 +10,7 @@ const matter = require("gray-matter");
 
 // Ask AI search index (Postgres full-text search, no AI calls needed)
 const supabase = require("../backend/lib/supabase");
+const { compileSafeMdx } = require("../backend/mdx/safeMdx");
 
 // Longest chunk stored for Ask AI; longer sections are split.
 const MAX_CHUNK_CHARS = 4000;
@@ -323,6 +324,14 @@ const docs = [];
     fs.mkdirSync(outputDir, { recursive: true });
 
     fs.writeFileSync(outputPath, result.raw);
+
+    // The viewer renders this pre-compiled, code-free tree instead of running the MDX.
+    // A page that doesn't compile (for example after a manual edit) shows its error.
+    const compiled = compileSafeMdx(fs.readFileSync(doc.filePath, "utf8")); // full file, so error lines match it
+    const page = compiled.ok ? { title, tree: compiled.tree } : { title, error: compiled.error };
+    if (!compiled.ok) console.warn(`[Worker] ${doc.route} doesn't compile: ${compiled.error.message}`);
+    if (compiled.ok && compiled.warnings.length) console.warn(`[Worker] ${doc.route}: ${compiled.warnings.join("; ")}`);
+    fs.writeFileSync(outputPath.replace(/\.mdx$/, ".page.json"), JSON.stringify(page));
 
     const toDir = path.join(DIST_PATH, "toc");
     fs.mkdirSync(toDir, { recursive: true });
