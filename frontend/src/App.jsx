@@ -18,6 +18,7 @@ import DangerZone from "./pages/settings/DangerZone";
 import Profile from "./pages/settings/Profile";
 import Billing from "./pages/settings/Billing";
 import AgentSkills from "./pages/settings/AgentSkills";
+import AiProviders from "./pages/settings/AiProviders";
 import Editor from "./pages/Editor";
 import NavigationEditor from "./pages/NavigationEditor";
 import Analytics from "./pages/Analytics";
@@ -150,6 +151,7 @@ function App() {
               <Route path="authentication" element={<Authentication />} />
               <Route path="general" element={<General />} />
               <Route path="agent" element={<AgentSkills />} />
+              <Route path="ai" element={<AiProviders />} />
               <Route path="api-keys" element={<ApiKeys />} />
               <Route path="danger-zone" element={<DangerZone />} />
               <Route path="profile" element={<Profile />} />
