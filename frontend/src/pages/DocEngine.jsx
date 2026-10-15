@@ -11,6 +11,17 @@ import { applyTheme } from "../lib/applyTheme";
 import { initThemeMode, shouldHideToggle } from "../lib/toggleTheme";
 import { applyPreset } from "../lib/themes";
 
+// The first page listed in docs.json navigation, used when the URL names no page.
+function firstPageRoute(navigation) {
+  for (const group of navigation || []) {
+    for (const page of group?.pages || []) {
+      const route = typeof page === "string" ? page : page?.route;
+      if (route) return route;
+    }
+  }
+  return null;
+}
+
 // --- NEW: Accept the custom props from App.jsx! ---
 export default function DocEngine({ customTenant, customVersion }) { 
   const params = useParams();
@@ -22,6 +33,7 @@ export default function DocEngine({ customTenant, customVersion }) {
   // Detect if we are inside the Dashboard's iframe preview
   const [isPreview, setIsPreview] = useState(false);
   const [siteConfig, setSiteConfig] = useState(null);
+  const [configLoaded, setConfigLoaded] = useState(false);
   const [hideToggle, setHideToggle] = useState(false);
 
   useEffect(() => {
@@ -61,8 +73,12 @@ export default function DocEngine({ customTenant, customVersion }) {
       .catch((err) => {
         console.error("Failed to load theme config:", err);
         document.documentElement.style.setProperty("--primary-brand", "#0fba81");
-      });
+      })
+      .finally(() => setConfigLoaded(true));
   }, [tenant, version]);
+
+  // Until docs.json has loaded we don't know which page to open by default.
+  const defaultRoute = configLoaded ? (firstPageRoute(siteConfig?.navigation) || "index") : null;
 
   // Derive topbar links and CTA from config
   const topbarLinks = siteConfig?.topbarLinks || [];
@@ -203,7 +219,7 @@ export default function DocEngine({ customTenant, customVersion }) {
             padding: "48px 32px" 
           }}>
             {/* Passed the props down! */}
-            <DocPage customTenant={tenant} customVersion={version} />
+            <DocPage customTenant={tenant} customVersion={version} defaultRoute={defaultRoute} />
           </div>
 
           {/* Step 7: Footer with Social Links */}

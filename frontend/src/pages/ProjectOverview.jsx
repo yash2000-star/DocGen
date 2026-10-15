@@ -239,7 +239,19 @@ export default function ProjectOverview() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoUrl: project.repo_url, projectName: project.project_name, tenantName: project.tenant_name })
-    }).catch(err => console.error("Trigger failed", err));
+    })
+    .then(async res => {
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+    })
+    .catch(async err => {
+      console.error("Trigger failed", err);
+      // Don't leave the project stuck in "building" if the request was rejected.
+      await updateProjectStatus(project.id, 'failed', 0);
+      setProject(p => ({ ...p, status: 'failed' }));
+    });
   };
 
   if (loading || !project) {
@@ -297,7 +309,7 @@ export default function ProjectOverview() {
             {project.status === 'successful' || project.status === 'live' ? (
               <div style={{ width: "100%", height: "100%", overflow: "hidden", position: "relative", borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
                 <iframe
-                  src={`http://localhost:5173/docs/${project.tenant_name}/${project.project_name}`}
+                  src={`${window.location.origin}/docs/${project.tenant_name}/${project.project_name}`}
                   scrolling="no" /* <-- THIS IS THE MAGIC BULLET to kill the scrollbar */
                   style={{ 
                     width: '200%', 

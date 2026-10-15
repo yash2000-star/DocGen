@@ -1,10 +1,10 @@
-require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { config } = require("./config");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 
 // ✅ Use flash-lite for editor — saves quota, still accurate for cleanup work
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+const model = genAI.getGenerativeModel({ model: config.gemini.editorModel });
 
 async function editDocs(draftMdx, sourceCode = null) {
 
@@ -47,6 +47,9 @@ ${sourceContext}
 ${draftMdx}
 
 OUTPUT ONLY THE FINAL POLISHED MDX. NO EXPLANATION. NO PREAMBLE. NO WRAPPER CODE BLOCKS.`;
+
+  // Without a Gemini API key the critic can't run, so keep the writer's draft.
+  if (!config.ai.geminiEnabled) return draftMdx;
 
   try {
     console.log(`\n🕵️  Critic is reviewing the draft...`);

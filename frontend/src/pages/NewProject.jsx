@@ -99,14 +99,22 @@ export default function NewProject() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoUrl, projectName, tenantName })
     })
-    .then(res => {
+    .then(async res => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Generation failed (HTTP ${res.status}).`);
+        }
         // AI Phase is done, Background Factory Worker is now compiling!
-        if (res.error) throw new Error(res.error);
         setCurrentProgressStep(3); // Jump to "Compiling static site..."
     })
-    .catch(err => {
-      setError("Server connection failed or timed out. Is the backend running?");
+    .catch(async err => {
+      // TypeError means fetch itself failed (backend down or unreachable).
+      setError(err instanceof TypeError
+        ? "Server connection failed or timed out. Is the backend running?"
+        : err.message);
       setStep("form");
+      // Don't leave the project stuck in "running" if the backend rejected the request.
+      await supabase.from('projects').update({ status: 'failed' }).eq('id', project.id);
     });
   };
 

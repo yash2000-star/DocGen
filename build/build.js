@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { title } = require("process");
 const { unified } = require("unified");
 const remarkParse = require("remark-parse").default;
 const remarkRehype = require("remark-rehype").default;
@@ -10,19 +9,14 @@ const GithubSlugger = require("github-slugger").default;
 const matter = require("gray-matter");
 
 //Embedding Tool
-require("dotenv").config({ path: path.join(__dirname, "../backend/.env") });
+const { config } = require("../backend/config");
+const supabase = require("../backend/lib/supabase");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { createClient } = require("@supabase/supabase-js");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 const embeddingModel = genAI.getGenerativeModel({
-  model: "gemini-embedding-001",
+  model: config.gemini.embeddingModel,
 });
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY,
-);
 
 const DOCS_PATH = path.join(__dirname, "../docs");
 const DIST_PATH = path.join(__dirname, "../dist");
@@ -268,8 +262,8 @@ const docs = [];
     const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
     searchIndex.push(...sections);
 
-    // If it made it past the "continue" guard above, it belongs to our project and needs vectors!
-    const shouldGenerateVectors = true;
+    // Vectors power Ask AI; they need a Gemini API key for embeddings.
+    const shouldGenerateVectors = config.ai.geminiEnabled;
     // Chunking Engine
     if (shouldGenerateVectors) {
     const paragraphs = result.raw.split("\n\n");
@@ -323,7 +317,7 @@ const docs = [];
       }
     }
     } else {
-      console.log(`⏩ Skipping expensive vector generation for: ${doc.route} (Unchanged)`);
+      console.log(`⏩ Skipping vector generation for: ${doc.route} (GEMINI_API_KEY not set)`);
     }
 
     const outputPath = path.join(DIST_PATH, doc.route + ".mdx");

@@ -164,7 +164,8 @@ function App() {
             
           </Route>
 
-          <Route path="/docs/:tenant/:version/*" element={<ProtectedRoute><DocEngine /></ProtectedRoute>} />
+          {/* Published docs are public: readers and search engines don't need an account */}
+          <Route path="/docs/:tenant/:version/*" element={<DocEngine />} />
           
           {/* --- NEW: The PLG Explore Route --- */}
           <Route path="/explore/:tenant/:version" element={<Explore />} />

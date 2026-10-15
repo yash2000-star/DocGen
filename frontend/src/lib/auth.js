@@ -9,7 +9,7 @@ export const loginWithGitHub = () => {
   return supabase.auth.signInWithOAuth({
     provider: "github",
     options: {
-      redirectTo: "http://localhost:5173/dashboard",
+      redirectTo: `${window.location.origin}/dashboard`,
       scopes: "repo" // <-- THIS IS THE MAGIC WORD. It asks for repository access.
     }
   });

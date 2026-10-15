@@ -28,16 +28,17 @@ function slugify(children) {
 }
 
 // --- NEW: Accept the custom props from DocEngine! ---
-export default function DocPage({ customTenant, customVersion }) {
+export default function DocPage({ customTenant, customVersion, defaultRoute }) {
   const params = useParams(); 
 
   // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
   const tenant = customTenant || params.tenant;
   const version = customVersion || params.version;
   
-  // NEW: Read the wildcard/splat parameter to determine which file to fetch.
-  // If no path is provided (e.g., they just visited /docs/tenant/v1), default to 'index'
-  const currentRoute = params["*"] || "index";
+  // Read the wildcard/splat parameter to determine which file to fetch.
+  // If no path is provided (e.g., they just visited /docs/tenant/v1), open the first
+  // page from docs.json navigation. defaultRoute is null while docs.json is loading.
+  const currentRoute = params["*"] || defaultRoute;
 
   const [MdxContent, setMdxContent] = useState(() => () => <h2>Loading document...</h2>);
 

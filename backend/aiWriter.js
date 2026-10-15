@@ -1,18 +1,23 @@
-require("dotenv").config();
 const { GoogleGenAI } = require("@google/genai");
+const { config } = require("./config");
 const editDocs = require("./aiEditor");
 
-// Google Gen AI SDK for Vertex requires region and project parameters.
-// We lazily instantiate the client so it doesn't crash the server on boot if ADC is missing.
+// The writer uses Vertex AI when a Google Cloud project is configured, otherwise a Gemini API key.
+// The client is created lazily so the server can boot without AI credentials.
 let clientInstance = null;
-function getVertexClient() {
+function getWriterClient() {
     if (!clientInstance) {
-        clientInstance = new GoogleGenAI({
-            vertexai: {
-                project: process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || "my-gcp-project",
-                location: process.env.CLOUD_ML_REGION || process.env.GOOGLE_CLOUD_REGION || "us-east5"
-            }
-        });
+        if (config.vertex.project) {
+            clientInstance = new GoogleGenAI({
+                vertexai: true,
+                project: config.vertex.project,
+                location: config.vertex.location,
+            });
+        } else if (config.gemini.apiKey) {
+            clientInstance = new GoogleGenAI({ apiKey: config.gemini.apiKey });
+        } else {
+            throw new Error("AI writer is not configured. Set GEMINI_API_KEY (or GOOGLE_CLOUD_PROJECT) in backend/.env.");
+        }
     }
     return clientInstance;
 }
@@ -135,8 +140,8 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 
     try {
         console.log(`\n🏛️  Super-Architect is designing the documentation site plan...`);
-        const response = await getVertexClient().models.generateContent({
-            model: "gemini-3-flash-preview",
+        const response = await getWriterClient().models.generateContent({
+            model: config.gemini.writerModel,
             contents: prompt,
             config: {
                 maxOutputTokens: 8192,
@@ -354,8 +359,8 @@ ${relevantSource}
     try {
         console.log(`\n✍️  Ghostwriter is crafting: "${pagePlan.title}" [${pagePlan.type}]...`);
 
-        const response = await getVertexClient().models.generateContent({
-            model: "gemini-3-flash-preview",
+        const response = await getWriterClient().models.generateContent({
+            model: config.gemini.writerModel,
             contents: prompt,
             config: {
                 maxOutputTokens: 8192,
