@@ -42,6 +42,7 @@ const askAI = require("./ai.service");
 const app = express();
 const publicRoutes = require('./routes/public');
 const mcpRoutes = require('./routes/mcp');
+const { createAiRouter } = require('./routes/ai');
 const { generateSkill, getSkillIndex } = require('../lib/generateSkill');
 
 app.use(cors({
@@ -226,6 +227,8 @@ app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
 
 app.use('/api/public', publicRoutes);
 app.use('/api/mcp', mcpRoutes);
+// Bring-your-own AI keys (requireAuth is a hoisted function declaration below)
+app.use('/api/ai', createAiRouter({ requireAuth, csrfProtection }));
 
 // --- SECURITY: Input validation for names that become folder names ---
 // Returns the trimmed name if it is a safe path segment, otherwise ''.

@@ -2,7 +2,7 @@
 
 DocGen turns a GitHub repository into a polished, Mintlify-style documentation site. An AI "architect" plans the site, a "ghostwriter" writes each page, and a "critic" cleans up the result. You get introduction, quickstart, guide and reference pages instead of one page per file.
 
-> **Status:** early development. The core flow (import a repo → generate → view docs) works locally. Bring-your-own AI key, a job queue and security hardening are next on the roadmap.
+> **Status:** early development. The core flow (import a repo → generate → view docs) works locally. Users can connect their own AI provider key in settings; generation switches over to those keys next, followed by a job queue and security hardening.
 
 ## How it works
 
@@ -56,7 +56,8 @@ Fill in the values. You'll find the Supabase URL and keys under **Project Settin
 |---|---|---|---|
 | `backend/.env` | `SUPABASE_URL` | Yes | Your Supabase project URL |
 | `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Lets the backend write data. Keep it secret. |
-| `backend/.env` | `GEMINI_API_KEY` | To generate docs | Writer, critic, search embeddings, Ask AI |
+| `backend/.env` | `AI_KEY_ENCRYPTION_KEY` | To save users' AI keys | Encrypts the provider keys users connect. Generate with `openssl rand -base64 32` and keep a backup. |
+| `backend/.env` | `GEMINI_API_KEY` | To generate docs (for now) | Server-wide key for the writer, critic, search embeddings and Ask AI, until generation uses users' own keys |
 | `backend/.env` | `RAZORPAY_*` | No | Billing. Leave empty to turn it off. |
 | `backend/.env` | `EMAIL_USER`, `EMAIL_PASS` | No | "Your docs are ready" emails |
 | `frontend/.env` | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Yes | Sign-in and dashboard data |
@@ -74,7 +75,30 @@ npm run dev:frontend   # http://localhost:5173 (in a second terminal)
 
 Open `http://localhost:5173`, sign in, and import a public GitHub repository.
 
+### 5. Connect your AI provider
+
+Open any project, then **Settings → AI providers**. Connect one of:
+
+| Provider | What you need |
+|---|---|
+| Anthropic (Claude) | An API key. Defaults: writer `claude-opus-5-5`, critic `claude-sonnet-5-5` |
+| OpenAI | An API key |
+| Google Gemini | An API key |
+| OpenRouter | An API key |
+| Ollama | A running Ollama server (default `http://localhost:11434/v1`), no key |
+| Any OpenAI-compatible endpoint | Its base URL, and a key if it needs one |
+
+DocGen tests the key with the provider before saving it, then stores it encrypted. The browser only ever sees the last 4 characters. Your first connected provider becomes your default.
+
+> In production (`NODE_ENV=production`), endpoints on localhost or private networks are blocked unless you set `ALLOW_PRIVATE_AI_ENDPOINTS=true`.
+
 To try the free preview without signing in, visit `http://localhost:5173/<owner>/<repo>`.
+
+## Tests
+
+```bash
+npm --prefix backend test
+```
 
 ## Troubleshooting
 
@@ -84,6 +108,8 @@ To try the free preview without signing in, visit `http://localhost:5173/<owner>
 | `AI writer is not configured` when generating | Set `GEMINI_API_KEY` in `backend/.env` and restart the backend. |
 | Sign-in redirects to the wrong place | Add `http://localhost:5173/**` to Supabase redirect URLs. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
+| "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
+| "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
 | Docs page says "Document not found" | Wait for the build to finish. The project status turns **Successful** on the dashboard when it does. |
 
 ## Project layout
@@ -93,6 +119,8 @@ To try the free preview without signing in, visit `http://localhost:5173/<owner>
 | `backend/server.js` | API routes |
 | `backend/services/generationPipeline.js` | Clone → plan → write → save pipeline shared by the dashboard and free preview |
 | `backend/aiWriter.js`, `backend/aiEditor.js` | Architect, ghostwriter and critic prompts |
+| `backend/ai/` | One client interface for Anthropic, OpenAI, Gemini and OpenAI-compatible providers |
+| `backend/services/aiCredentials.js` | Encrypted storage and testing of users' own AI keys |
 | `backend/config.js` | All environment configuration |
 | `build/build.js` | Static build, search index and embeddings |
 | `frontend/src/pages/DocEngine.jsx` | Public docs viewer |

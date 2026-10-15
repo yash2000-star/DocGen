@@ -2,6 +2,7 @@
 // Every backend module (and build/build.js) should read settings from here
 // instead of calling dotenv or reading process.env directly.
 const path = require("path");
+const { parseMasterKey } = require("./lib/secretBox");
 
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 
@@ -47,7 +48,25 @@ const config = {
 
     // How many pages an anonymous "free preview" may generate.
     previewMaxPages: Number(env.PREVIEW_MAX_PAGES) || 3,
+
+    // Bring-your-own-key: users' AI provider keys are encrypted with this master key.
+    byok: {
+        masterKey: null,
+        configError: null,
+        // Self-hosted models (Ollama, LM Studio) live on localhost or a private network.
+        // Allowed by default in development, off in production unless set explicitly.
+        allowPrivateEndpoints: env.ALLOW_PRIVATE_AI_ENDPOINTS
+            ? env.ALLOW_PRIVATE_AI_ENDPOINTS === "true"
+            : (env.NODE_ENV || "development") !== "production",
+    },
 };
+
+try {
+    config.byok.masterKey = parseMasterKey(env.AI_KEY_ENCRYPTION_KEY);
+} catch (err) {
+    config.byok.configError = err.message;
+}
+config.byok.enabled = Boolean(config.byok.masterKey);
 
 config.razorpay.enabled = Boolean(config.razorpay.keyId && config.razorpay.keySecret);
 config.email.enabled = Boolean(config.email.user && config.email.pass);
@@ -61,6 +80,10 @@ function assertRequiredConfig() {
     const missing = [];
     if (!config.supabase.url) missing.push("SUPABASE_URL");
     if (!config.supabase.serviceKey) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+
+    if (config.byok.configError) {
+        throw new Error(config.byok.configError);
+    }
 
     if (missing.length > 0) {
         throw new Error(
@@ -77,6 +100,9 @@ function logOptionalFeatures(log = console.log) {
     }
     if (!config.ai.geminiEnabled) {
         log("[Config] Search embeddings and Ask AI disabled: set GEMINI_API_KEY.");
+    }
+    if (!config.byok.enabled) {
+        log("[Config] Bring-your-own AI keys disabled: set AI_KEY_ENCRYPTION_KEY (openssl rand -base64 32).");
     }
     if (!config.razorpay.enabled) {
         log("[Config] Billing disabled: set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable it.");
