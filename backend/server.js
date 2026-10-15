@@ -233,8 +233,18 @@ app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
 
 // The compiled, code-free page the docs viewer renders (see backend/mdx/safeMdx.js).
 app.get('/api/page/:tenant/:version/*docPath', (req, res) => {
-    const file = resolveDistPage(req, res, '.page.json');
-    if (file) res.type('application/json').sendFile(file);
+    // Sites built before pages were pre-compiled only have the .mdx: compile it now and
+    // save the result, so they keep working without a rebuild.
+    const mdxFile = resolveDistPage(req, res, '.mdx');
+    if (!mdxFile) return;
+    const pageFile = mdxFile.replace(/\.mdx$/, '.page.json');
+    if (!fs.existsSync(pageFile)) {
+        const source = fs.readFileSync(mdxFile, 'utf8');
+        const compiled = compileSafeMdx(source);
+        const title = (source.match(/^#\s+(.+)$/m) || [])[1] || path.basename(mdxFile, '.mdx');
+        fs.writeFileSync(pageFile, JSON.stringify(compiled.ok ? { title, tree: compiled.tree } : { title, error: compiled.error }));
+    }
+    res.type('application/json').sendFile(pageFile);
 });
 
 app.use('/api/public', publicRoutes);
