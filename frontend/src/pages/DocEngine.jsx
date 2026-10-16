@@ -33,7 +33,7 @@ export default function DocEngine({ customTenant, customVersion }) {
   const version = customVersion || params.version;
   
   // Detect if we are inside the Dashboard's iframe preview
-  const [isPreview, setIsPreview] = useState(false);
+  const [isPreview] = useState(() => window !== window.top);
   const [siteConfig, setSiteConfig] = useState(null);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [hideToggle, setHideToggle] = useState(false);
@@ -54,10 +54,6 @@ export default function DocEngine({ customTenant, customVersion }) {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [tenant, version]);
-
-  useEffect(() => {
-    setIsPreview(window !== window.top);
-  }, []);
 
   // Search results ask for a page with a "doc-change" event ({ detail: route }).
   const navigate = useNavigate();

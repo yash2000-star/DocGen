@@ -19,8 +19,8 @@ supabase/   Database schema and Row-Level Security policies
 3. **Fact check:** each page is checked against the repository, without AI, for invented file names, environment variables, npm scripts, packages and links to pages that don't exist. A page with problems goes back to your critic model once, with the exact list. Links that still point nowhere become plain text, and anything else left is listed on the run.
 4. **API reference:** if the repo has an OpenAPI 3.x or Swagger 2.0 spec (`openapi.yaml`, `swagger.json`, or any YAML/JSON file starting with `openapi:`), DocGen builds an API reference from it, without AI. It has an overview plus one page per endpoint with parameters, request body, responses, cURL/JavaScript/Python samples and a "Try it" playground, grouped by tag in the sidebar. A push that changes the spec refreshes it.
 5. Every generated page must compile; one that doesn't goes back to your critic model with the error to fix. `build/build.js` then compiles each page on the server into a code-free tree (no `import`/`export`, `{expressions}` or event handlers; only known components and safe links) and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
-6. The docs are published at `/docs/<owner>/<repo>`. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
-7. Each run is listed in the project's activity feed with its progress, the model used, the tokens it cost, the fact-check result and the API reference it built.
+6. The docs are published at `/docs/<owner>/<repo>`, or at your own domain (see [Publishing your docs](#publishing-your-docs)). Each page is sent as complete HTML that search engines and AI crawlers can read, and the docs app takes over in the browser. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
+8. Each run is listed in the project's activity feed with its progress, the model used, the tokens it cost, the fact-check result and the API reference it built.
 
 ### Background jobs
 
@@ -33,6 +33,41 @@ Generations, free previews and push updates are jobs in the `build_events` table
 - **No half-written sites:** each run writes into its own folder under `repos/`, and pages are copied into `docs/` only when the whole run succeeds.
 
 The API server runs up to `WORKER_CONCURRENCY` jobs (default 2). To scale workers separately, set `WORKER_CONCURRENCY=0` on the API server and run `npm --prefix backend run worker` as many times as you like.
+
+## Publishing your docs
+
+Every docs site has:
+
+- **Pages search engines can read:** each page is served as finished HTML with its title, description, canonical URL, Open Graph and Twitter tags, and structured data. Unknown pages answer `404` and aren't indexed.
+- **A sidebar with page titles, tabs, and previous/next links.** A site with an API reference gets **Documentation** and **API reference** tabs, each with its own sidebar. The layout comes from `site.json`, which the build writes next to the pages.
+- **`sitemap.xml`, `llms.txt` and a Markdown copy of every page** (`/docs/<owner>/<repo>/quickstart.md`), so AI tools can read the docs. `/sitemap.xml` and `/robots.txt` cover every site on the server.
+- **A page menu:** copy the page as Markdown, view it as Markdown, or open it in ChatGPT or Claude to ask about it.
+- **"Was this page helpful?"** Readers answer Yes or No and can leave a comment. Answers appear in the project's **Analytics**, per page, with recent comments. Readers stay anonymous, and answers are rate limited.
+
+### Run everything on one address (recommended in production)
+
+Search engines see the full pages only when the backend serves the app too:
+
+```bash
+VITE_API_URL=https://docs.example.com npm --prefix frontend run build   # once per deploy
+# backend/.env
+PUBLIC_URL=https://docs.example.com
+FRONTEND_URL=https://docs.example.com
+SERVE_FRONTEND=true
+```
+
+The backend then serves the dashboard, the docs and the API from `PUBLIC_URL`. Without `SERVE_FRONTEND`, `/docs/...` on the backend still serves the readable HTML, and the frontend dev server shows the app.
+
+### Custom domains
+
+To serve a project's docs at `docs.yourcompany.com`, open the project's **Settings → Domain setup** and add the domain. DocGen shows two DNS records:
+
+1. **TXT** `_docgen-verify.docs.yourcompany.com` with the value shown (`docgen-verify=…`), which proves you own the domain.
+2. **CNAME** `docs.yourcompany.com` pointing at your DocGen server.
+
+Click **Verify** once the TXT record is in place. The first project to verify a domain gets it, so nobody can claim a domain they don't control. The docs are then served at the domain's root (`https://docs.yourcompany.com/quickstart`), with links, sitemap, `llms.txt` and `robots.txt` for that domain.
+
+DocGen doesn't issue certificates: put the domain behind a proxy that handles HTTPS (Caddy, Cloudflare, your load balancer) and forwards the original `Host` header. Requests for the app's own hostnames (`PUBLIC_URL`, `FRONTEND_URL`, localhost and `APP_HOSTNAMES`) are never treated as custom domains. If the frontend runs on its own hostname, add that hostname to `VITE_APP_HOSTNAMES` when building it.
 
 ## Run it locally
 
@@ -73,11 +108,15 @@ Fill in the values. You'll find the Supabase URL and keys under **Project Settin
 | `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Lets the backend write data. Keep it secret. |
 | `backend/.env` | `AI_KEY_ENCRYPTION_KEY` | Yes, to generate docs | Encrypts the provider keys users connect. Generate with `openssl rand -base64 32` and keep a backup. |
 | `backend/.env` | `PREVIEW_AI_PROVIDER`, `PREVIEW_AI_API_KEY` | No | A server-paid AI key for the anonymous free preview. Off when empty. |
+| `backend/.env` | `PUBLIC_URL` | In production | The backend's public address, used for canonical URLs, sitemaps and custom domains. Defaults to `http://localhost:4000`. |
+| `backend/.env` | `SERVE_FRONTEND`, `FRONTEND_DIST_DIR` | No | Serve the built app from the backend (see [Publishing your docs](#publishing-your-docs)) |
+| `backend/.env` | `APP_HOSTNAMES` | No | Extra hostnames of the app itself, so they aren't treated as custom domains |
 | `backend/.env` | `TRUST_PROXY` | In production behind a proxy | Proxy hops (usually `1`), so rate limits see visitors' real IPs |
 | `backend/.env` | `RAZORPAY_*` | No | Billing. Leave empty to turn it off. |
 | `backend/.env` | `EMAIL_USER`, `EMAIL_PASS` | No | "Your docs are ready" emails |
 | `frontend/.env` | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Yes | Sign-in and dashboard data |
 | `frontend/.env` | `VITE_API_URL` | Yes | Backend address, `http://localhost:4000` by default |
+| `frontend/.env` | `VITE_APP_HOSTNAMES` | No | The app's own hostnames; any other hostname is treated as a docs custom domain |
 
 When the backend starts, it lists any optional features that are turned off and the variable that turns each one on.
 
@@ -124,13 +163,14 @@ What protects DocGen users, and where it lives:
 - **Repository contents:** symlinks in a repository are never followed, so a repo can't pull the server's own files (like `backend/.env`) into the AI prompt or the docs. Specs are parsed as plain data (YAML JSON schema).
 - **API playground ("Try it"):** the backend proxy only calls public internet addresses, follows no redirects, sends no cookies or credentials, and limits time (10 s), response size (1 MB) and rate.
 - **Webhooks:** each project has its own secret, stored encrypted. A push must be signed with the secret of the project it's for.
-- **Cross-site requests:** the dashboard API authenticates with a Bearer token, and state-changing requests from other origins are refused.
-- **Abuse limits:** Ask AI, free previews (per visitor and per day), the API playground and webhooks are rate limited. Set `TRUST_PROXY` in production so limits apply per visitor.
+- **Custom domains:** a domain serves docs only after a DNS TXT record proves ownership, and only one project can verify it. The domain columns can only be changed through the backend.
+- **Cross-site requests:** the dashboard API authenticates with a Bearer token, only accepts requests from the app's own origins, and refuses state-changing requests from other origins. Public reader endpoints (docs, Ask AI, feedback) accept any origin, without credentials, so docs on custom domains work.
+- **Public pages:** server-rendered pages escape all page content and send a Content-Security-Policy.
+- **Abuse limits:** Ask AI, reader feedback, domain checks, free previews (per visitor and per day), the API playground and webhooks are rate limited. Set `TRUST_PROXY` in production so limits apply per visitor.
 - **Data exposure:** job payloads, worker ids and webhook secrets are hidden from users by database grants. The agent (MCP) endpoint serves only published pages. Errors never include stack traces.
 - **Dependencies:** `npm audit` is clean for the root, backend and frontend packages at the time of writing. Run it before deploying.
 
 Known gaps:
-- Custom domains aren't verified yet, so a project can reserve a domain it doesn't own. It only takes effect if that domain's DNS points at DocGen.
 - Rate limits are kept in memory, so each backend instance counts separately. The daily preview cap is counted in the database.
 
 ## Tests
@@ -154,6 +194,10 @@ npm --prefix backend test
 | The API playground says it "can only call public APIs" | It can't reach localhost or private networks in production. For local testing, set `API_PLAYGROUND_ALLOW_PRIVATE=true`. |
 | No API reference was generated | The spec must be OpenAPI 3.x or Swagger 2.0, at most 2 MB, outside test/example folders, and named like `openapi.yaml`/`swagger.json` or start with `openapi:`. The run's activity row says which spec was used. |
 | The activity feed lists fact-check items left | The page still mentions things the repository doesn't have. Fix them in the editor, or regenerate. |
+| Domain setup says "The TXT record wasn't found yet" | Check the record with `dig TXT _docgen-verify.<your-domain>`. DNS changes can take a few minutes to appear. |
+| A verified custom domain shows the DocGen dashboard instead of the docs | The domain is listed as one of the app's own hostnames. Remove it from `APP_HOSTNAMES` / `VITE_APP_HOSTNAMES`. Changes can take a minute to apply. |
+| A custom domain shows a certificate error | DocGen doesn't issue certificates. Put the domain behind a proxy that handles HTTPS and forwards the `Host` header. |
+| Search results link to `localhost` | Set `PUBLIC_URL` to the backend's public address. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
 | "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
@@ -181,7 +225,10 @@ npm --prefix backend test
 | `backend/services/webhookSecrets.js` | Per-project GitHub webhook secrets |
 | `backend/quality/factCheck.js` | Checks generated pages against the repository |
 | `backend/openapi/` | Builds the API reference from an OpenAPI/Swagger spec |
-| `build/build.js` | Static build, search index and Ask AI section index |
+| `build/build.js` | Static build (`site.json`), search index and Ask AI section index |
+| `lib/siteManifest.js` | Sidebar groups, tabs and reading order |
+| `backend/seo/`, `backend/routes/site.js` | Server-rendered docs pages, sitemaps, `llms.txt`, `robots.txt`, custom-domain routing |
+| `backend/services/customDomains.js` | Custom domains and their DNS verification |
 | `frontend/src/pages/DocEngine.jsx` | Public docs viewer |
 | `supabase/migrations/` | Database schema, RLS policies, SQL functions |
 

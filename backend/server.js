@@ -188,7 +188,8 @@ app.use(helmet({
 
 // --- SECURITY: cross-site requests ---
 // State-changing dashboard requests must come from the dashboard (see lib/originCheck.js).
-const csrfProtection = createOriginCheck([config.frontendUrl]);
+// The dashboard runs at FRONTEND_URL, or at PUBLIC_URL when this server serves the app.
+const csrfProtection = createOriginCheck([config.frontendUrl, config.publicUrl]);
 
 app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');

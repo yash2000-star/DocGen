@@ -74,23 +74,21 @@ function AuthListener() {
   return null; 
 }
 
+// Any other hostname is a docs site's custom domain. Set VITE_APP_HOSTNAMES
+// (comma-separated) to the hostnames the dashboard itself runs on.
+function isAppHostname(hostname) {
+  const appHostnames = (import.meta.env.VITE_APP_HOSTNAMES || "localhost,127.0.0.1,prismify.yashwant.xyz,docgen.app")
+    .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return appHostnames.some((h) => hostname === h || hostname.endsWith(`.${h}`));
+}
+
 function App() {
-  const [isLoadingDomain, setIsLoadingDomain] = useState(true);
+  const [isLoadingDomain, setIsLoadingDomain] = useState(() => !isAppHostname(window.location.hostname));
   const [customDomainData, setCustomDomainData] = useState(null);
 
   useEffect(() => {
     const hostname = window.location.hostname;
-    
-    // Any other hostname is a docs site's custom domain. Set VITE_APP_HOSTNAMES
-    // (comma-separated) to the hostnames the dashboard itself runs on.
-    const appHostnames = (import.meta.env.VITE_APP_HOSTNAMES || "localhost,127.0.0.1,prismify.yashwant.xyz,docgen.app")
-      .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
-    const isMainApp = appHostnames.some((h) => hostname === h || hostname.endsWith(`.${h}`));
-
-    if (isMainApp) {
-      setIsLoadingDomain(false);
-      return;
-    }
+    if (isAppHostname(hostname)) return;
 
     const fetchDomain = async () => {
       try {
