@@ -228,25 +228,6 @@ export default function ProjectSettings() {
         })
       });
 
-      const API_URL = import.meta.env.VITE_API_URL;
-      let resConfig = await fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/docs.json`, { cache: "no-store" });
-      if (!resConfig.ok) {
-        resConfig = await fetch(`${API_URL}/api/static/${project.tenant_name}/${project.project_name}/mint.json`, { cache: "no-store" });
-      }
-      const currentConfig = resConfig.ok ? await resConfig.json() : {};
-      const updatedConfig = { ...currentConfig, theme: { ...currentConfig.theme, primaryColor, logoUrl } };
-
-      const { data: { session } } = await supabase.auth.getSession();
-      const githubToken = session?.provider_token;
-
-      if (githubToken) {
-        await apiFetch('/api/github/save-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tenant: project.tenant_name, version: project.project_name, configData: updatedConfig, githubToken })
-        });
-      }
-
       await supabase.from('projects').update({ primary_color: primaryColor, logo_url: logoUrl }).eq('id', id);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);

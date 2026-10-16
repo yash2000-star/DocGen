@@ -343,6 +343,10 @@ const docs = [];
     fs.writeFileSync(tocFile, JSON.stringify(headings, null, 2));
   }
 
+  // A scoped build also removes the output of pages that no longer exist (deleted in the
+  // editor, or an endpoint dropped from the API spec), so they stop being served.
+  if (targetScope) removeStaleOutput(path.join(DIST_PATH, targetScope), targetScope, new Set(docs.map((doc) => doc.route)));
+
   docs.sort((a, b) => a.order - b.order);
 
   const tenants = [...new Set(docs.map((doc) => doc.tenant))];
@@ -366,15 +370,23 @@ const docs = [];
       }
 
      // --- UPDATED: Smart Config Resolver ---
-      let sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docgen.json");
+      // docs.json (or mint.json) holds the site and its navigation; docgen.json holds the
+      // branding saved in the dashboard settings, layered on top. Its navigation (written
+      // by older versions) is ignored: the editor saves navigation into docs.json.
+      let sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docs.json");
       let destConfigPath = path.join(targetDir, "docs.json"); // Always output as docs.json for the frontend
-
-      // Fallback chain: docgen.json → docs.json → mint.json (backwards compat)
-      if (!fs.existsSync(sourceConfigPath)) {
-        sourceConfigPath = path.join(DOCS_PATH, tenant, version, "docs.json");
-      }
       if (!fs.existsSync(sourceConfigPath)) {
         sourceConfigPath = path.join(DOCS_PATH, tenant, version, "mint.json");
+      }
+      let brandingConfig = {};
+      try {
+        const brandingPath = path.join(DOCS_PATH, tenant, version, "docgen.json");
+        if (fs.existsSync(brandingPath)) {
+          const { navigation: _ignored, ...branding } = JSON.parse(fs.readFileSync(brandingPath, "utf8"));
+          brandingConfig = branding;
+        }
+      } catch (e) {
+        console.error(`[Config] Ignoring unreadable docgen.json for ${tenant}/${version}:`, e.message);
       }
 
       // Deep merge utility: user values always win over defaults
@@ -422,7 +434,7 @@ const docs = [];
             const rawConfig = fs.readFileSync(sourceConfigPath, 'utf8');
             const userConfig = JSON.parse(rawConfig);
             // Deep merge: defaults + user config (user values always win)
-            siteConfig = deepMerge(defaultConfig, userConfig);
+            siteConfig = deepMerge(deepMerge(defaultConfig, userConfig), brandingConfig);
             fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
             console.log(`[Config] Loaded and merged settings for ${tenant}/${version}`);
         } catch (e) {
@@ -430,6 +442,7 @@ const docs = [];
             fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
         }
       } else {
+        siteConfig = deepMerge(defaultConfig, brandingConfig);
         fs.writeFileSync(destConfigPath, JSON.stringify(siteConfig, null, 2));
       }
 
@@ -483,6 +496,22 @@ const docs = [];
   }
 
   console.log("Build completed successfully.");
+}
+
+function removeStaleOutput(dir, routePrefix, liveRoutes) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      removeStaleOutput(full, `${routePrefix}/${entry.name}`, liveRoutes);
+      continue;
+    }
+    const match = /^(.*)\.(mdx|md|page\.json)$/.exec(entry.name);
+    if (match && !liveRoutes.has(`${routePrefix}/${match[1]}`)) {
+      fs.rmSync(full, { force: true });
+      console.log(`[Worker] Removed stale output ${routePrefix}/${entry.name}`);
+    }
+  }
 }
 
 // --- UPDATED: Dynamic Sidebar Generator ---

@@ -2,7 +2,7 @@
 
 DocGen turns a GitHub repository into a polished, Mintlify-style documentation site, written by **your own AI**: connect a Claude, OpenAI, Gemini, OpenRouter or self-hosted model key, and DocGen does the rest. DocGen itself never pays for or resells AI. An AI "architect" plans the site, a "ghostwriter" writes each page, and a "critic" cleans up the result. You get introduction, quickstart, guide and reference pages instead of one page per file.
 
-> **Status:** early development. The core flow (connect your AI key → import a repo → generate → view docs → Ask AI) works locally, with generation running as background jobs and the security basics in place (see [Security](#security)).
+> **Status:** early development. The core flow (connect your AI key → import a repo → generate → edit → view docs → Ask AI) works locally, with generation running as background jobs and the security basics in place (see [Security](#security)).
 
 ## How it works
 
@@ -33,6 +33,19 @@ Generations, free previews and push updates are jobs in the `build_events` table
 - **No half-written sites:** each run writes into its own folder under `repos/`, and pages are copied into `docs/` only when the whole run succeeds.
 
 The API server runs up to `WORKER_CONCURRENCY` jobs (default 2). To scale workers separately, set `WORKER_CONCURRENCY=0` on the API server and run `npm --prefix backend run worker` as many times as you like.
+
+## Editing your docs
+
+Open **Editor** in a project. It works on the site's real pages, the same files the published site is built from:
+
+- **Live preview:** the right side draws the page exactly as readers will see it, with the same components and safety rules. Syntax errors show their line, and a page that doesn't compile can't be published.
+- **Publish:** the **Publish** button (or Ctrl/Cmd+S) saves the page and rebuilds the site, usually within a few seconds. If someone else published the page after you opened it, you see what would change and choose whose version to keep.
+- **New and deleted pages:** add a page to any group; delete one from the toolbar. Deleted pages can be restored from their history.
+- **History:** every version of every page is kept (the newest 50 per page), whether the AI, a person or a restore wrote it. Pick one to see what restoring it would change, then restore it.
+- **Your edits are never overwritten by the AI.** Once a person edits a page, regenerating or a push update leaves it alone and saves the AI's new version as a suggestion. The page shows a banner; review the changes, then accept, edit before publishing, or dismiss. Pages nobody edited keep updating on their own.
+- **Navigation:** **Navigation** lists the sidebar's groups and pages. Rename groups, put them in tabs, and reorder or move pages. Regenerating keeps pages it didn't write in their groups.
+
+Viewers can open the editor read-only; editors and admins can change pages.
 
 ## Publishing your docs
 
@@ -163,6 +176,7 @@ What protects DocGen users, and where it lives:
 - **Repository contents:** symlinks in a repository are never followed, so a repo can't pull the server's own files (like `backend/.env`) into the AI prompt or the docs. Specs are parsed as plain data (YAML JSON schema).
 - **API playground ("Try it"):** the backend proxy only calls public internet addresses, follows no redirects, sends no cookies or credentials, and limits time (10 s), response size (1 MB) and rate.
 - **Webhooks:** each project has its own secret, stored encrypted. A push must be signed with the secret of the project it's for.
+- **Editor:** every change is checked on the server (project role, page compiles, valid page names that stay inside the site's folder, size limits) and recorded in the page history, which only the backend can write.
 - **Custom domains:** a domain serves docs only after a DNS TXT record proves ownership, and only one project can verify it. The domain columns can only be changed through the backend.
 - **Cross-site requests:** the dashboard API authenticates with a Bearer token, only accepts requests from the app's own origins, and refuses state-changing requests from other origins. Public reader endpoints (docs, Ask AI, feedback) accept any origin, without credentials, so docs on custom domains work.
 - **Public pages:** server-rendered pages escape all page content and send a Content-Security-Policy.
@@ -171,6 +185,8 @@ What protects DocGen users, and where it lives:
 - **Dependencies:** `npm audit` is clean for the root, backend and frontend packages at the time of writing. Run it before deploying.
 
 Known gaps:
+- Pages are stored on the backend's disk, so run a single backend instance (workers can share it) until storage moves to a shared volume or object store.
+- The editor doesn't push changes back to GitHub yet. Two-way Git sync is the next part of step 9.
 - Rate limits are kept in memory, so each backend instance counts separately. The daily preview cap is counted in the database.
 
 ## Tests
@@ -198,6 +214,9 @@ npm --prefix backend test
 | A verified custom domain shows the DocGen dashboard instead of the docs | The domain is listed as one of the app's own hostnames. Remove it from `APP_HOSTNAMES` / `VITE_APP_HOSTNAMES`. Changes can take a minute to apply. |
 | A custom domain shows a certificate error | DocGen doesn't issue certificates. Put the domain behind a proxy that handles HTTPS and forwards the `Host` header. |
 | Search results link to `localhost` | Set `PUBLIC_URL` to the backend's public address. |
+| The editor says "This page changed since you opened it" | Someone else, or an AI update, published the page first. Compare the versions in the panel and choose which to keep. |
+| A page shows "An AI update is waiting for review" | You edited this page, so the AI didn't overwrite it. Click **Review** to see its changes. |
+| A regeneration didn't change a page | The page was edited by hand. Its new version is waiting as a suggestion in the editor. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
 | "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
@@ -225,6 +244,9 @@ npm --prefix backend test
 | `backend/services/webhookSecrets.js` | Per-project GitHub webhook secrets |
 | `backend/quality/factCheck.js` | Checks generated pages against the repository |
 | `backend/openapi/` | Builds the API reference from an OpenAPI/Swagger spec |
+| `backend/routes/editor.js` | Editor API: pages, navigation, history, suggestions, live preview |
+| `backend/services/sitePages.js`, `backend/services/pageRevisions.js` | Pages and navigation on disk; page history and AI suggestions |
+| `frontend/src/pages/Editor.jsx`, `frontend/src/pages/NavigationEditor.jsx` | The editor and navigation editor |
 | `build/build.js` | Static build (`site.json`), search index and Ask AI section index |
 | `lib/siteManifest.js` | Sidebar groups, tabs and reading order |
 | `backend/seo/`, `backend/routes/site.js` | Server-rendered docs pages, sitemaps, `llms.txt`, `robots.txt`, custom-domain routing |

@@ -16,6 +16,8 @@ const { meterClient } = require("../ai/usage");
 const { LLMError } = require("../ai/errors");
 const { collectRepoFacts, factCheckPage, createQualityReport, unlinkBroken } = require("../quality/factCheck");
 const { findOpenApiSpec, buildApiReference, API_REFERENCE_DIR } = require("../openapi");
+const revisions = require("./pageRevisions");
+const { scanPages } = require("./sitePages");
 
 const BUILD_SCRIPT = path.join(ROOT_DIR, "build", "build.js");
 const PAGE_DELAY_MS = 3000; // Rate limiting between AI calls
@@ -50,14 +52,70 @@ function createWorkspace(tenantName, projectName, runId) {
     };
 }
 
-// Copies the run's finished pages over the live docs folder. Pages the run didn't write
-// (older pages, manual ones) are kept, as before.
-function publishPages(outDir, tenantName, projectName) {
+/**
+ * Copies the run's finished pages over the live docs folder and records them in the
+ * page history. Pages the run didn't write (older pages, manual ones) are kept.
+ *
+ * A page someone edited by hand is never overwritten: the run's version is saved as a
+ * suggestion to review in the editor instead. A page someone deleted stays deleted.
+ *
+ * @param {object} options
+ * @param {"generation"|"update"} options.source
+ * @param {string} [options.jobId]
+ * @param {boolean} [options.replaceApiReference] - Remove the old generated API pages first
+ * @returns {Promise<{ published: string[], suggested: string[] }>}
+ */
+async function publishPages(outDir, tenantName, projectName, { source, jobId, replaceApiReference = false } = {}) {
     const targetDir = path.join(DOCS_DIR, tenantName, projectName);
     fs.mkdirSync(targetDir, { recursive: true });
+
+    // Throws if the history can't be read: publishing blind could overwrite someone's edits.
+    const projectId = await revisions.projectIdFor(tenantName, projectName);
+    const states = projectId ? revisions.pageStates(await revisions.revisionSummaries(projectId)) : new Map();
+    const isProtected = (route) => states.get(route)?.handEdited || states.get(route)?.deletedByHand;
+
+    if (replaceApiReference) removeLiveApiReference(tenantName, projectName, isProtected);
+
+    const published = [];
+    const suggested = [];
+    const rows = [];
+    const jobRef = isUuid(jobId) ? jobId : null;
+    for (const { route, file } of scanPages(outDir)) {
+        const content = fs.readFileSync(file, "utf8");
+        const livePath = path.join(targetDir, path.relative(outDir, file));
+        const live = fs.existsSync(livePath) ? fs.readFileSync(livePath, "utf8") : null;
+        if (isProtected(route)) {
+            fs.rmSync(file);
+            if (states.get(route).handEdited && content !== live) {
+                suggested.push(route);
+                rows.push({ route, kind: "suggestion", source, content, jobId: jobRef, message: source === "update" ? "Updated after a push" : "Regenerated" });
+            }
+            continue;
+        }
+        if (content === live) continue;
+        // Keep what was there before history started, so it can be restored.
+        if (live !== null && !states.has(route)) rows.push({ route, source: "baseline", content: live, message: "Before this run" });
+        rows.push({ route, source, content, jobId: jobRef });
+        published.push(route);
+    }
+
     fs.cpSync(outDir, targetDir, { recursive: true, force: true });
-    return targetDir;
+
+    if (projectId && rows.length) {
+        try {
+            // An older suggestion for the same page is replaced by the new one.
+            for (const route of suggested) await revisions.clearSuggestions(projectId, route);
+            await revisions.recordRevisions(projectId, rows);
+            await revisions.pruneHistory(projectId);
+        } catch (error) {
+            console.error(`[Pipeline] Couldn't record page history for ${tenantName}/${projectName}:`, error.message);
+        }
+    }
+    if (suggested.length) console.log(`[Pipeline] Kept ${suggested.length} hand-edited pages; their AI updates are waiting as suggestions.`);
+    return { published, suggested };
 }
+
+const isUuid = (value) => typeof value === "string" && /^[0-9a-f-]{36}$/i.test(value);
 
 // A repo that doesn't exist or is private fails the same way every time: don't retry it.
 async function cloneOrExplain(repoUrl, targetPath) {
@@ -108,6 +166,27 @@ function readExistingSiteConfig(docsJsonPath) {
     }
 }
 
+/**
+ * Pages the run didn't write (added in the editor, or kept from before) stay in the group
+ * they were in. Old API reference entries are left out: the new reference replaces them.
+ */
+function keepOtherPages(navigation, liveNavigation, exists) {
+    if (!Array.isArray(liveNavigation)) return navigation;
+    const listed = new Set(navigation.flatMap((group) => group.pages || []));
+    const result = navigation.map((group) => ({ ...group, pages: [...(group.pages || [])] }));
+    for (const oldGroup of liveNavigation) {
+        if (!oldGroup || typeof oldGroup !== "object" || !Array.isArray(oldGroup.pages)) continue;
+        const kept = oldGroup.pages.filter((route) => typeof route === "string" && !listed.has(route)
+            && route !== API_REFERENCE_DIR && !route.startsWith(`${API_REFERENCE_DIR}/`) && exists(route));
+        if (!kept.length) continue;
+        let group = result.find((g) => g.group === oldGroup.group && (g.tab || null) === (oldGroup.tab || null));
+        if (!group) result.push((group = { group: oldGroup.group, ...(oldGroup.tab ? { tab: oldGroup.tab } : {}), pages: [] }));
+        group.pages.push(...kept);
+        kept.forEach((route) => listed.add(route));
+    }
+    return result;
+}
+
 // Groups written pages into Mintlify-style navigation, keeping the Architect's order.
 function buildNavigation(pages) {
     const groupMap = {};
@@ -128,11 +207,12 @@ function writeApiReference(outDir, apiReference) {
 }
 
 // Generated API pages from an earlier run are replaced, not mixed with the new ones (an
-// endpoint removed from the spec must disappear from the site).
-function removeLiveApiReference(tenantName, projectName) {
+// endpoint removed from the spec must disappear from the site). Pages edited by hand stay.
+function removeLiveApiReference(tenantName, projectName, isProtected = () => false) {
     const liveDir = path.join(DOCS_DIR, tenantName, projectName);
-    fs.rmSync(path.join(liveDir, API_REFERENCE_DIR), { recursive: true, force: true });
-    fs.rmSync(path.join(liveDir, `${API_REFERENCE_DIR}.mdx`), { force: true });
+    for (const { route, file } of scanPages(liveDir)) {
+        if ((route === API_REFERENCE_DIR || route.startsWith(`${API_REFERENCE_DIR}/`)) && !isProtected(route)) fs.rmSync(file, { force: true });
+    }
 }
 
 // Nav groups the API reference added last time, so a refresh can swap them out.
@@ -271,15 +351,17 @@ async function generateProjectDocs({ repoUrl, tenantName, projectName, maxPages 
         // The live docs.json is read so regenerating keeps the user's branding.
         const liveDocsJson = path.join(DOCS_DIR, tenantName, projectName, "docs.json");
         const siteConfig = readExistingSiteConfig(liveDocsJson) || defaultSiteConfig(blueprint, projectName);
+        const liveNavigation = siteConfig.navigation;
         siteConfig.navigation = buildNavigation(writtenPages);
         delete siteConfig.apiReference; // the navigation was rebuilt from scratch
         withApiNavigation(siteConfig, apiReference);
+        const liveDir = path.join(DOCS_DIR, tenantName, projectName);
+        siteConfig.navigation = keepOtherPages(siteConfig.navigation, liveNavigation, (route) => fs.existsSync(path.join(liveDir, `${route}.mdx`)) || fs.existsSync(path.join(liveDir, `${route}.md`)));
         fs.writeFileSync(path.join(workspace.outDir, "docs.json"), JSON.stringify(siteConfig, null, 2));
 
         const apiPages = apiReference?.pages.length || 0;
         await report({ step: "saving", message: `Saving ${writtenPages.length + apiPages} pages`, pagesDone: plannedPages.length, pagesTotal: plannedPages.length });
-        removeLiveApiReference(tenantName, projectName);
-        publishPages(workspace.outDir, tenantName, projectName);
+        const { suggested } = await publishPages(workspace.outDir, tenantName, projectName, { source: "generation", jobId: runId, replaceApiReference: true });
         console.log(`[Pipeline] ✅ Published ${writtenPages.length} written pages, ${apiPages} API reference pages and docs.json.`);
 
         const { report: qualityReport } = quality;
@@ -289,7 +371,7 @@ async function generateProjectDocs({ repoUrl, tenantName, projectName, maxPages 
             generatedCount: writtenPages.length + apiPages,
             pages: writtenPages,
             usage,
-            quality: { ...qualityReport, apiReference: apiReference?.summary || null },
+            quality: { ...qualityReport, apiReference: apiReference?.summary || null, suggestions: suggested },
         };
     } catch (error) {
         // Keep the tokens spent before the failure, so the run record still shows them.
@@ -337,6 +419,7 @@ async function updateDocsForFiles({ repoUrl, tenantName, projectName, files, llm
     const workspace = createWorkspace(tenantName, projectName, runId);
     const filesToProcess = filterChangedFiles(files);
     let generatedCount = 0;
+    let suggested = [];
 
     try {
         await report({ step: "cloning", message: "Cloning the repository" });
@@ -399,13 +482,12 @@ async function updateDocsForFiles({ repoUrl, tenantName, projectName, files, llm
 
         if (generatedCount > 0 || refreshApiReference) {
             await report({ step: "saving", message: `Saving ${generatedCount + apiPages} pages`, pagesDone: filesToProcess.length, pagesTotal: filesToProcess.length });
-            if (refreshApiReference) removeLiveApiReference(tenantName, projectName);
-            publishPages(workspace.outDir, tenantName, projectName);
+            ({ suggested } = await publishPages(workspace.outDir, tenantName, projectName, { source: "update", jobId: runId, replaceApiReference: refreshApiReference }));
         }
         return {
             generatedCount: generatedCount + apiPages,
             usage,
-            quality: { ...quality.report, apiReference: apiReference?.summary || null },
+            quality: { ...quality.report, apiReference: apiReference?.summary || null, suggestions: suggested },
         };
     } catch (error) {
         error.usage = usage;
@@ -435,12 +517,35 @@ function runBuild(args) {
     });
 }
 
+// One build per project at a time in this process. A build asked for while one runs waits
+// for it, and all the requests made meanwhile share a single follow-up build, which sees
+// every change made before it started.
+const builds = new Map(); // "tenant/project" → { running, next }
+
 function buildProject(tenantName, projectName) {
-    return runBuild(["--scope", `${tenantName}/${projectName}`]);
+    const key = `${tenantName}/${projectName}`;
+    let state = builds.get(key);
+    if (!state) builds.set(key, (state = { running: null, next: null }));
+    if (!state.running) {
+        state.running = runBuild(["--scope", key]).finally(() => {
+            state.running = null;
+            if (!state.next) builds.delete(key);
+        });
+        return state.running;
+    }
+    if (!state.next) {
+        state.next = state.running.catch(() => {}).then(() => {
+            state.next = null;
+            return buildProject(tenantName, projectName);
+        });
+    }
+    return state.next;
 }
 
 module.exports = {
     generateProjectDocs,
+    publishPages,
+    keepOtherPages,
     updateDocsForFiles,
     filterChangedFiles,
     runBuild,

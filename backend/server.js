@@ -49,6 +49,7 @@ if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
 const publicRoutes = require('./routes/public');
 const mcpRoutes = require('./routes/mcp');
 const { createAiRouter } = require('./routes/ai');
+const { createEditorRouter } = require('./routes/editor');
 const { generateSkill, getSkillIndex } = require('../lib/generateSkill');
 
 // The dashboard calls the API from FRONTEND_URL. Readers' endpoints (docs pages, search,
@@ -258,6 +259,8 @@ app.use('/api/public', publicRoutes);
 app.use('/api/mcp', mcpRoutes);
 // Bring-your-own AI keys (requireAuth is a hoisted function declaration below)
 app.use('/api/ai', createAiRouter({ requireAuth, csrfProtection }));
+// The editor: pages, navigation, history and AI suggestions (routes/editor.js).
+app.use('/api/projects', createEditorRouter({ requireAuth, csrfProtection, buildProject }));
 
 // --- SECURITY: Input validation for names that become folder names ---
 // Returns the trimmed name if it is a safe path segment, otherwise ''.
@@ -712,70 +715,7 @@ app.post('/api/jobs/:id/cancel', csrfProtection, requireAuth, async (req, res) =
     res.json({ job: await cancelJob(job.id) });
 });
 
-// --- NEW: Two-Way GitHub Sync Route ---
-app.post("/api/github/save-config", csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
-    // We expect the frontend to pass the config object and the user's GitHub provider token
-    const tenant = readName(req.body.tenant);
-    const version = readName(req.body.version);
-    const { configData, githubToken } = req.body;
-
-    if (!tenant || !version || !configData || typeof configData !== 'object' || typeof githubToken !== 'string' || !githubToken) {
-        return res.status(400).json({ error: "Missing required sync data." });
-    }
-
-    try {
-        console.log(`\n☁️ [GitHub Sync] Pushing docs.json to ${tenant}/${version}...`);
-
-        // 1. Convert the JSON config into a Base64 string (GitHub API requires Base64)
-        const contentEncoded = Buffer.from(JSON.stringify(configData, null, 2)).toString("base64");
-        const path = "docs.json";
-        const repoUrl = `https://api.github.com/repos/${tenant}/${version}/contents/${path}`;
-
-        const headers = {
-            "Authorization": `Bearer ${githubToken}`,
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "DocGen-Platform"
-        };
-
-        // 2. Fetch the existing file first to get its 'sha' (GitHub requires this to update an existing file)
-        let sha = null;
-        const getFileRes = await fetch(repoUrl, { headers });
-        if (getFileRes.ok) {
-            const fileData = await getFileRes.json();
-            sha = fileData.sha;
-        }
-
-        // 3. Commit the file directly to the repository
-        const commitBody = {
-            message: "Update docs.json configuration via Dashboard",
-            content: contentEncoded,
-        };
-        
-        // If the file already existed, attach the sha to overwrite it
-        if (sha) commitBody.sha = sha;
-
-        const putRes = await fetch(repoUrl, {
-            method: "PUT",
-            headers,
-            body: JSON.stringify(commitBody)
-        });
-
-        if (!putRes.ok) {
-            const errData = await putRes.json();
-            throw new Error(errData.message || "Failed to push to GitHub");
-        }
-
-        console.log(`✅ [GitHub Sync] Successfully committed docs.json!`);
-        res.json({ message: "Successfully synced to GitHub!" });
-
-    } catch (error) {
-        console.error("❌ GitHub Sync Error:", error);
-        res.status(502).json({ error: `GitHub refused the update: ${String(error.message).slice(0, 200)}` });
-    }
-});
-
-// NEW: Require Admin to save settings
-// NEW: Require Admin to save settings & navigation
+// Branding settings (docgen.json, layered over docs.json by the build). Admins only.
 app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     const tenant = readName(req.body.tenant);
     const version = readName(req.body.version);
@@ -784,8 +724,8 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
         return res.status(400).json({ error: 'Invalid project' });
     }
     
-    // We now accept 'navigation' from the frontend!
-    const { primaryColor, logoUrl, fontFamily, darkMode, navigation } = req.body;
+    // Branding only. The navigation is edited in the editor (PUT /api/projects/:id/navigation).
+    const { primaryColor, logoUrl, fontFamily, darkMode } = req.body;
 
     // These end up in the published site's CSS and <img> tags: only plain values.
     if (primaryColor !== undefined && primaryColor !== '' && !/^#[0-9a-f]{3,8}$/i.test(String(primaryColor))) {
@@ -796,9 +736,6 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
     }
     if (fontFamily !== undefined && fontFamily !== '' && !/^[\w \-,'"]{1,100}$/.test(String(fontFamily))) {
         return res.status(400).json({ error: 'Invalid font family.' });
-    }
-    if (navigation !== undefined && (!Array.isArray(navigation) || JSON.stringify(navigation).length > 100000)) {
-        return res.status(400).json({ error: 'Invalid navigation.' });
     }
 
     const configPath = path.join(DOCS_DIR, tenant, version, 'docgen.json');
@@ -825,8 +762,6 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
             fontFamily: fontFamily || existingConfig.theme?.fontFamily,
             darkMode: darkMode !== undefined ? darkMode : existingConfig.theme?.darkMode 
         },
-        // Save the new sidebar order!
-        navigation: navigation || existingConfig.navigation || [], 
         updatedAt: new Date().toISOString()
     };
 
@@ -862,56 +797,6 @@ app.delete('/api/projects/:tenant/:version', csrfProtection, requireAuth, requir
     if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
 
     res.json({ message: 'Project deleted successfully' });
-});
-
-// NEW: Require Admin or Editor to save a doc file manually
-app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'), (req, res) => {
-    const tenant = readName(req.body.tenant);
-    const version = readName(req.body.version);
-    const fileName = readName(req.body.fileName);
-    const content = req.body.content; 
-
-    if (!tenant || !version || !fileName || typeof content !== 'string' || !content) {
-        return res.status(400).json({ error: "Missing or invalid required fields" });
-    }
-
-    // Don't publish a page the viewer can't render.
-    const compiled = compileSafeMdx(content);
-    if (!compiled.ok) {
-        const { message, line, column } = compiled.error;
-        return res.status(400).json({ error: `This page has a syntax error${line ? ` on line ${line}` : ''}: ${message}`, line, column });
-    }
-
-    const targetDir = path.join(DOCS_DIR, tenant, version);
-
-    if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-    }
-
-    // The docs viewer serves .mdx files, so save with that extension.
-    const filePath = path.join(targetDir, `${fileName}.mdx`);
-
-    try {
-        fs.writeFileSync(filePath, content);
-        console.log(`Saved new document: ${filePath}`);
-
-        res.json({
-            message: "Document saved! Engine is rebuilding in background.",
-            tenant,
-            version,
-            fileName
-        });
-
-        buildProject(tenant, version)
-            .then(() => console.log(`Engine successfully rebuilt for ${fileName}!`))
-            .catch((err) => console.error(`Build failed for ${fileName}:`, err.message));
-
-    } catch (err) {
-        console.error("Error saving file:", err);
-        if (!res.headersSent) {
-            res.status(500).json({ error: "Failed to save the file." });
-        }
-    }
 });
 
 // "Try it" requests from the docs API playground. Public APIs only: see services/apiProxy.js.
