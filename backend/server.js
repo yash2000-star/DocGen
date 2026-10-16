@@ -14,6 +14,7 @@ const path = require("path");
 const helmet = require('helmet');
 const crypto = require('crypto');
 const { buildProject, filterChangedFiles } = require("./services/generationPipeline");
+const { isSpecFileName } = require("./openapi");
 const { DOCS_DIR, DIST_DIR, isSafeSegment, parseGithubRepoUrl } = require("./lib/paths");
 const supabase = require("./lib/supabase");
 const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
@@ -489,8 +490,10 @@ app.post("/api/webhook", webhookLimit, async (req, res) => {
         if (Array.isArray(commit.modified)) changedFiles.push(...commit.modified);
     }
     const filesToProcess = filterChangedFiles(changedFiles);
+    // A changed OpenAPI spec refreshes the API reference (no AI needed).
+    const refreshApiReference = changedFiles.some((file) => typeof file === 'string' && isSpecFileName(file));
 
-    if (filesToProcess.length === 0) {
+    if (filesToProcess.length === 0 && !refreshApiReference) {
         console.log("[webhook] No relevant code files changed. Skipping AI generation.");
         return res.status(200).json({ message: "No relevant files changed." });
     }
@@ -513,7 +516,7 @@ app.post("/api/webhook", webhookLimit, async (req, res) => {
     // GitHub gives up after 10 seconds, so queue the update and answer at once.
     const { jobId, merged, skipped } = await enqueueWebhookUpdate({
         projectId: project.id,
-        payload: { repoUrl, tenantName, projectName, userId: project.user_id, files: filesToProcess },
+        payload: { repoUrl, tenantName, projectName, userId: project.user_id, files: filesToProcess, refreshApiReference },
         provider: llm.provider,
         model: llm.writerModel,
     });

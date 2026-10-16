@@ -1,0 +1,102 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.2.0
+  description: "Manage pets. Use {petId} placeholders. <script>alert('x')</script>"
+servers:
+  - url: https://{region}.petstore.example.com/v1
+    variables:
+      region:
+        default: eu
+security:
+  - bearerAuth: []
+tags:
+  - name: Pets
+    description: Everything about your pets
+  - name: Store
+paths:
+  /pets:
+    get:
+      tags: [Pets]
+      operationId: listPets
+      summary: List pets
+      description: "Returns pets. Supports `limit` and {cursor} paging."
+      parameters:
+        - name: limit
+          in: query
+          description: How many items to return.
+          schema: { type: integer, format: int32, default: 20 }
+      responses:
+        "200":
+          description: A page of pets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Pet" }
+        "401":
+          description: Not signed in | expired
+    post:
+      tags: [Pets]
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewPet" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pet" }
+              example: { id: "p_1", name: "Rex", tag: "dog", owner: { name: "Ada" } }
+  /pets/{petId}:
+    parameters:
+      - name: petId
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [Pets]
+      summary: Delete a pet
+      deprecated: true
+      responses:
+        "204": { description: Deleted }
+  /store/inventory:
+    get:
+      tags: [Store]
+      operationId: getInventory
+      security:
+        - apiKey: []
+      responses:
+        "200":
+          description: Counts by status
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: { type: integer } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+    apiKey: { type: apiKey, in: header, name: X-API-Key }
+  schemas:
+    NewPet:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: "The pet's name, e.g. {name}" }
+        tag: { type: string, enum: [dog, cat] }
+        owner:
+          type: object
+          properties:
+            name: { type: string }
+            email: { type: string, format: email }
+    Pet:
+      allOf:
+        - $ref: "#/components/schemas/NewPet"
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, readOnly: true }
+            self: { $ref: "#/components/schemas/Pet" }

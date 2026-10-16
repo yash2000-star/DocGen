@@ -10,7 +10,7 @@ import { apiFetch } from '../lib/api';
 const BUSY_STATUSES = ['queued', 'running', 'building'];
 
 // Columns members may read (the job payload stays on the server).
-const EVENT_COLUMNS = 'id, project_id, event_type, status, triggered_by, files_count, created_at, provider, model, input_tokens, output_tokens, error_message, finished_at, attempts, max_attempts, run_after, started_at, progress, cancel_requested';
+const EVENT_COLUMNS = 'id, project_id, event_type, status, triggered_by, files_count, created_at, provider, model, input_tokens, output_tokens, error_message, finished_at, attempts, max_attempts, run_after, started_at, progress, cancel_requested, quality';
 
 const statusColors = {
   live:       { bg: '#ecfdf5', color: '#059669', label: 'Live' },
@@ -212,6 +212,26 @@ function ActivityRow({ event, canCancel, onCancel }) {
           )}
           {(event.input_tokens > 0 || event.output_tokens > 0) && (
             <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Tokens:</strong> <span>{event.input_tokens.toLocaleString()} in · {event.output_tokens.toLocaleString()} out</span></div>
+          )}
+          {event.quality?.apiReference && (
+            <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155', flexShrink: 0 }}>API reference:</strong> <span data-testid="activity-api-reference">{event.quality.apiReference.operations} endpoints from <code>{event.quality.apiReference.specPath}</code>{event.quality.apiReference.truncated ? ' (first 200)' : ''}</span></div>
+          )}
+          {event.quality && event.quality.pagesChecked > 0 && (
+            <div style={{ display: 'flex' }}>
+              <strong style={{ width: '100px', color: '#334155', flexShrink: 0 }}>Fact check:</strong>
+              <span data-testid="activity-fact-check">
+                {event.quality.issuesFound === 0
+                  ? `${event.quality.pagesChecked} page${event.quality.pagesChecked === 1 ? '' : 's'} checked against the repository, nothing invented`
+                  : `${event.quality.issuesFound} reference${event.quality.issuesFound === 1 ? '' : 's'} to things not in the repository, ${event.quality.issuesFixed} fixed`}
+                {event.quality.remaining?.length > 0 && (
+                  <ul style={{ margin: '6px 0 0 0', paddingLeft: '18px', color: '#b45309' }}>
+                    {event.quality.remaining.slice(0, 10).map((item, i) => (
+                      <li key={i}><code>{item.value}</code> ({item.kind}) on {item.page}</li>
+                    ))}
+                  </ul>
+                )}
+              </span>
+            </div>
           )}
           {event.attempts > 1 && (
             <div style={{ display: 'flex' }}><strong style={{ width: '100px', color: '#334155' }}>Attempts:</strong> <span>{event.attempts} of {event.max_attempts}</span></div>

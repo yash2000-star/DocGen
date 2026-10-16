@@ -16,7 +16,13 @@ const budgetFor = (llm) => llm.promptBudgetTokens || DEFAULT_PROMPT_BUDGET_TOKEN
 // This is the brain — it decides what pages to create, not just group files.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generateArchitectBlueprint(codeFiles, contextFiles, projectName, llm) {
+/**
+ * @param {object} [options]
+ * @param {{ specPath: string, operations: number, tags: string[] }} [options.apiReference] -
+ *   Set when an OpenAPI spec was found: its reference pages are generated from the spec, so
+ *   the plan shouldn't document endpoints one by one.
+ */
+async function generateArchitectBlueprint(codeFiles, contextFiles, projectName, llm, { apiReference } = {}) {
 
     // A digest of the codebase, most important files first, within the prompt budget.
     const { text: sourceDigest, omitted } = buildSourceDigest({ codeFiles, contextFiles, budgetTokens: budgetFor(llm) });
@@ -34,7 +40,7 @@ Mintlify generates conceptual pages, not file dumps. For example, from a simple 
 - "Introduction" — welcoming overview with feature cards
 - "Quickstart" — get running in 2 minutes
 - "Setup" — environment & dependencies  
-- "Getting an API key" — external knowledge about APIs used
+- "Getting an API key" — only because the code calls a weather API
 - "Customization" — how to modify the app
 - "Weather data" — API/data reference
 - "UI components" — DOM element reference
@@ -54,6 +60,8 @@ Notice: Most pages DON'T map 1:1 to a source file. They are synthesized from the
    - "Get Started" — Introduction, Quickstart (onboarding)
    - "Guides" — Task-oriented how-to pages (setup, config, customization)
    - "Reference" — Technical deep-dives (API, data models, components)
+9. Plan only pages the codebase supports. Don't plan pages about features, services or settings the code doesn't have.${apiReference ? `
+10. An API reference is generated automatically from the OpenAPI spec \`${apiReference.specPath}\` (${apiReference.operations} endpoints${apiReference.tags.length ? `, groups: ${apiReference.tags.slice(0, 10).join(", ")}` : ""}). Do NOT plan pages that document individual endpoints. You may plan one guide on using the API (authentication, errors, pagination) that links to the reference at /api-reference.` : ""}
 
 ## OUTPUT FORMAT
 Output ONLY valid JSON matching this exact structure. No markdown fences. No explanation.
@@ -162,7 +170,7 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 // Each page is written differently based on its type and purpose.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint, llm) {
+async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint, llm, { onDraft } = {}) {
 
     // Build the source context based on what the Architect requested
     const budgetTokens = budgetFor(llm);
@@ -199,7 +207,10 @@ async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBluepri
     }
 
     // Build the navigation context so pages can reference each other
-    const navContext = fullBlueprint.pages.map(p => `- [${p.title}](/${p.slug})`).join("\n");
+    const navContext = [
+        ...fullBlueprint.pages.map(p => `- [${p.title}](/${p.slug})`),
+        ...(fullBlueprint.apiReference ? ["- [API reference](/api-reference) (generated from the OpenAPI spec: link here for endpoint details)"] : []),
+    ].join("\n");
 
     const prompt = `You are an elite Technical Writer at Mintlify. You write documentation that feels like it was crafted by a real person — warm, professional, concise, and genuinely helpful. Your docs should feel like MongoDB's official docs or Stripe's API reference — premium and polished.
 
@@ -288,14 +299,15 @@ Card and Accordion \`icon\` values are icon names, never emoji: rocket, zap, cod
 3. **Use components aggressively.** Every procedure → Steps. Every tip → Note/Tip. Every feature list → CardGroup.
 4. **Write for humans.** Imagine a developer at 11pm trying to get this working. Be clear, direct, and helpful.
 5. **Add real value.** Don't just describe what the code does — explain WHY and WHEN to use it.
-6. **Cross-reference.** Mention other pages in the site ("See the [Quickstart](/quickstart) guide to get started.")
-7. **Use external knowledge.** If the code uses an API (like OpenWeatherMap), explain how to get API keys, rate limits, etc.
+6. **Cross-reference.** Link to other pages from the site map using their exact slug, like [Quickstart](/quickstart). Don't link to pages that aren't in the site map.
+7. **Stick to the source.** Describe only files, commands, settings and behaviour you can see in the source code below. Never invent file names, environment variables, npm scripts, packages, endpoints or options. If the code calls an external service, you may say how to get its API key, but don't make up its limits or prices. When unsure, leave it out.
 8. **No redundancy.** Never repeat the title in the first sentence. Start with substance.
 
 ## REQUIRED FRONTMATTER FORMAT
 Start your output with EXACTLY this YAML frontmatter:
 ---
 title: "${pagePlan.title}"
+description: "One sentence (under 160 characters) saying what this page helps the reader do."
 group: "${pagePlan.group}"
 order: ${fullBlueprint.pages.indexOf(pagePlan) + 1}
 ---
@@ -325,13 +337,15 @@ ${relevantSource}
 
         console.log(`✅ Ghostwriter drafted "${pagePlan.title}". Passing to Critic...`);
 
-        // Pass to the editor for cleanup and validation
-        const sourceCode = allCodeFiles.map(f => f.code).join("\n\n---\n\n").substring(0, 15000);
-        const finalPolishedText = await editDocs(draftText, sourceCode, llm);
+        // The critic checks the draft against the same source the writer used.
+        const finalPolishedText = await editDocs(draftText, relevantSource, llm);
 
         // Only publish pages that compile; broken ones go back to the critic to fix.
         const checked = await ensureValidMdx(finalPolishedText, llm, pagePlan.title);
-        return checked ? checked.mdx : null;
+        if (!checked) return null;
+
+        // Fact and link checks against the repository (see quality/factCheck.js).
+        return onDraft ? await onDraft(checked.mdx, { relevantSource }) : checked.mdx;
     } catch (error) {
         // A bad key or missing model would fail every later page too: stop the run.
         if (isFatalLLMError(error)) throw error;
@@ -346,7 +360,7 @@ ${relevantSource}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // The old generateDocs function is preserved as a fallback
-async function generateDocs(file, llm) {
+async function generateDocs(file, llm, options = {}) {
     // Wrap the old single-file call into the new page-based system
     const pagePlan = {
         slug: file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, ''),
@@ -363,7 +377,7 @@ async function generateDocs(file, llm) {
         pages: [pagePlan]
     };
 
-    return await generatePage(pagePlan, [file], [], dummyBlueprint, llm);
+    return await generatePage(pagePlan, [file], [], dummyBlueprint, llm, options);
 }
 
 module.exports = { generateDocs, generatePage, generateArchitectBlueprint };

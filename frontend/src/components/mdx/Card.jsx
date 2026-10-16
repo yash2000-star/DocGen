@@ -31,12 +31,6 @@ export function Card({ title, icon, href, children }) {
         transition-all duration-200 ease-in-out
         ${isLink ? 'cursor-pointer hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700 hover:-translate-y-0.5' : ''}
       `}
-      onClick={(e) => {
-        if (isLink && href.startsWith('/')) {
-          e.preventDefault();
-          window.dispatchEvent(new CustomEvent("doc-change", { detail: href }));
-        }
-      }}
     >
       <div className="flex items-center gap-3 mb-3">
         {icon && (

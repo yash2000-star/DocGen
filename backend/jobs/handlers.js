@@ -47,7 +47,7 @@ async function generation(job, ctx) {
     });
     if (error) console.error("[Jobs] Couldn't count the generation:", error.message);
 
-    return { filesCount: result.generatedCount, usage: result.usage };
+    return { filesCount: result.generatedCount, usage: result.usage, quality: result.quality };
 }
 
 /** The anonymous free preview, written with the server's preview key (if the admin set one). */
@@ -69,23 +69,23 @@ async function preview(job, ctx) {
     if (email && config.email.enabled) {
         sendSuccessEmail(email, tenantName, projectName);
     }
-    return { filesCount: result.generatedCount, usage: result.usage };
+    return { filesCount: result.generatedCount, usage: result.usage, quality: result.quality };
 }
 
 /** Rewrites pages for files changed by a push, with the project owner's AI key. */
 async function webhook(job, ctx) {
-    const { repoUrl, tenantName, projectName, userId, files } = job.payload;
+    const { repoUrl, tenantName, projectName, userId, files, refreshApiReference } = job.payload;
     const llm = await getUserLLM(userId);
     await recordModel(ctx, llm);
 
     const result = await updateDocsForFiles({
-        repoUrl, tenantName, projectName, files, llm,
+        repoUrl, tenantName, projectName, files, llm, refreshApiReference,
         runId: job.id,
         onProgress: ctx.reportProgress,
         shouldCancel: ctx.shouldCancel,
     });
-    if (result.generatedCount > 0) await build(ctx, { tenantName, projectName });
-    return { filesCount: result.generatedCount, usage: result.usage };
+    if (result.generatedCount > 0 || refreshApiReference) await build(ctx, { tenantName, projectName });
+    return { filesCount: result.generatedCount, usage: result.usage, quality: result.quality };
 }
 
 module.exports = { generation, preview, webhook };
