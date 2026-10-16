@@ -15,17 +15,15 @@ const cookieParser = require('cookie-parser');
 const csrf         = require('csurf');
 const helmet = require('helmet');
 const crypto = require('crypto');
-const cloneRepo = require("./gitServices");
-const { generateDocs } = require("./aiWriter");
-const { generateProjectDocs, buildProject } = require("./services/generationPipeline");
-const { DOCS_DIR, DIST_DIR, isSafeSegment } = require("./lib/paths");
+const { buildProject, filterChangedFiles } = require("./services/generationPipeline");
+const { DOCS_DIR, DIST_DIR, isSafeSegment, parseGithubRepoUrl } = require("./lib/paths");
 const supabase = require("./lib/supabase");
 const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
 const { createRateLimiter } = require("./lib/rateLimit");
-const { startRun, finishRun } = require("./services/buildEvents");
+const { enqueueJob, enqueueWebhookUpdate, getJob, cancelJob } = require("./jobs/queue");
+const { createWorker } = require("./jobs/worker");
 const { describeAiError } = require("./ai/httpErrors");
 const { compileSafeMdx } = require("./mdx/safeMdx");
-const { meterClient } = require("./ai/usage");
 
 // Billing is optional: Razorpay is only set up when its keys are present.
 let razorpay = null;
@@ -487,19 +485,12 @@ app.post("/api/webhook", async (req, res) => {
         return res.status(400).json({ message: "Invalid repository name." });
     }
 
-    let changedFiles = [];
+    const changedFiles = [];
     for (const commit of payload.commits) {
-        if (commit.added) changedFiles.push(...commit.added);
-        if(commit.modified) changedFiles.push(...commit.modified);
+        if (Array.isArray(commit.added)) changedFiles.push(...commit.added);
+        if (Array.isArray(commit.modified)) changedFiles.push(...commit.modified);
     }
-
-    changedFiles = [...new Set(changedFiles)];
-
-    const vaildExtensions = [".js", ".ts", ".py", ".go"];
-    const filesToProcess = changedFiles.filter(file => {
-        const ext = path.extname(file);
-        return vaildExtensions.includes(ext);
-    });
+    const filesToProcess = filterChangedFiles(changedFiles);
 
     if (filesToProcess.length === 0) {
         console.log("[webhook] No relevant code files changed. Skipping AI generation.");
@@ -509,7 +500,7 @@ app.post("/api/webhook", async (req, res) => {
     // Updates are written with the project owner's own AI key.
     const { data: project } = await supabase
         .from('projects')
-        .select('user_id')
+        .select('id, user_id')
         .eq('tenant_name', tenantName)
         .eq('project_name', projectName)
         .maybeSingle();
@@ -527,60 +518,20 @@ app.post("/api/webhook", async (req, res) => {
         return res.status(200).json({ message: `Skipped: ${ai.message}` });
     }
 
-    // GitHub gives up after 10 seconds, so accept now and write the docs in the background.
-    res.status(202).json({ message: `Updating docs for ${filesToProcess.length} changed files in the background.` });
-
-    const runId = await startRun({ tenantName, projectName, eventType: 'webhook', triggeredBy: 'github', provider: llm.provider, model: llm.writerModel });
-    const { client: meteredClient, totals: usage } = meterClient(llm.client);
-    const runLlm = { ...llm, client: meteredClient };
-    let generatedCount = 0;
-
-    try {
-        console.log(`\n [Webhook] Detected changes in ${filesToProcess.length} files. Starting targeted update...`);
-
-        const downloadedFolderPath = await cloneRepo(repoUrl, tenantName, projectName);
-
-        const targetDir = path.join(DOCS_DIR, tenantName, projectName);
-        if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
-        }
-
-        for (const relativeFilePath of filesToProcess) {
-            const fullPath = path.join(downloadedFolderPath, relativeFilePath);
-            // Only plain paths inside the clone (a crafted payload could contain "../").
-            if (!fullPath.startsWith(downloadedFolderPath + path.sep) || !fs.existsSync(fullPath)) continue;
-
-            const content = fs.readFileSync(fullPath, "utf-8");
-            const fileObj = { path: fullPath, code: content };
-
-            const markdownOutput = await generateDocs(fileObj, runLlm);
-
-            if (markdownOutput) {
-               const parsedPath = path.parse(relativeFilePath);
-               const nestedTargetDir = path.join(targetDir, parsedPath.dir);
-
-               if (!fs.existsSync(nestedTargetDir)) {
-                fs.mkdirSync(nestedTargetDir, { recursive: true });
-               }
-
-               const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
-               fs.writeFileSync(mdFilePath, markdownOutput);
-
-               console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
-               generatedCount++;
-            }
-        }
-
-        console.log("[webhook] Waking up the factory Worker...");
-        await buildProject(tenantName, projectName);
-        console.log("Targeted webhook update complete!");
-        await finishRun(runId, { status: 'successful', filesCount: generatedCount, usage });
-
-    } catch (error) {
-        const ai = describeAiError(error);
-        console.error("Webhook Error:", ai ? ai.message : error);
-        await finishRun(runId, { status: 'failed', filesCount: generatedCount, usage, errorMessage: ai ? ai.message : error.message });
-    }
+    // GitHub gives up after 10 seconds, so queue the update and answer at once.
+    const { jobId, merged, skipped } = await enqueueWebhookUpdate({
+        projectId: project.id,
+        payload: { repoUrl, tenantName, projectName, userId: project.user_id, files: filesToProcess },
+        provider: llm.provider,
+        model: llm.writerModel,
+    });
+    const message = skipped
+        ? "A full regeneration is already queued; it will include these changes."
+        : merged
+            ? `Added ${filesToProcess.length} changed files to the update already queued.`
+            : `Queued a docs update for ${filesToProcess.length} changed files.`;
+    console.log(`[Webhook] ${tenantName}/${projectName}: ${message}`);
+    res.status(202).json({ message, jobId });
 });
 
 // NEW: Require Admin or Editor to generate docs from GitHub
@@ -593,74 +544,87 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         return res.status(400).json({ error: "Missing or invalid repoUrl, projectName, or tenantName" });
     }
 
-    const setStatus = (status) => supabase
-        .from('projects')
-        .update({ status })
-        .eq('tenant_name', tenantName)
-        .eq('project_name', projectName);
+    if (!parseGithubRepoUrl(repoUrl)) {
+        return res.status(400).json({ error: "Repository URL must look like https://github.com/<owner>/<repo>." });
+    }
 
-    // Docs are written with the AI key of whoever starts the run.
+    const { data: project } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('tenant_name', tenantName)
+        .eq('project_name', projectName)
+        .maybeSingle();
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    // Docs are written with the AI key of whoever starts the run. Check it now so a missing
+    // key is reported straight away instead of as a failed job.
     let llm;
     try {
         llm = await getUserLLM(req.user.id);
     } catch (error) {
         const ai = describeAiError(error);
         if (!ai) throw error;
-        await setStatus('failed');
+        await supabase.from('projects').update({ status: 'failed' }).eq('id', project.id).in('status', ['pending', 'running']);
         return res.status(ai.status).json({ error: ai.message, code: ai.code });
     }
 
-    const runId = await startRun({ tenantName, projectName, eventType: 'generation', triggeredBy: 'dashboard', provider: llm.provider, model: llm.writerModel });
+    await supabase.from('projects').update({ repo_url: repoUrl }).eq('id', project.id);
+    const { jobId, duplicate } = await enqueueJob({
+        projectId: project.id,
+        eventType: 'generation',
+        triggeredBy: 'dashboard',
+        payload: { repoUrl, tenantName, projectName, userId: req.user.id },
+        provider: llm.provider,
+        model: llm.writerModel,
+    });
 
-    try {
-        await setStatus('running');
-
-        const { generatedCount, usage } = await generateProjectDocs({ repoUrl, tenantName, projectName, llm });
-
-        // Increment Generation Count
-        await supabase.rpc('increment_usage', {
-            p_user_id: req.user.id,
-            p_month: new Date().toISOString().slice(0, 7),
-            p_field: 'generations'
-        });
-
-        res.json({
-            message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
-            fileProcessed: generatedCount,
-            tenant: tenantName,
-            version: projectName,
-            usage,
-        });
-
-        console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
-        buildProject(tenantName, projectName)
-            .then(async () => {
-                console.log("Factory Worker finished successfully!");
-                await setStatus('successful');
-                await finishRun(runId, { status: 'successful', filesCount: generatedCount, usage });
-            })
-            .catch(async (err) => {
-                console.error("Factory Build failed:", err.message);
-                await setStatus('failed');
-                await finishRun(runId, { status: 'failed', filesCount: generatedCount, usage, errorMessage: `Build failed: ${err.message}` });
-            });
-
-    } catch (error) { 
-        const ai = describeAiError(error);
-        console.error("GitHub API Error", ai ? `${ai.code}: ${ai.message} ${ai.providerMessage || ''}` : error);
-        await setStatus('failed');
-
-        const message = ai ? ai.message : error.statusCode ? error.message : "Failed to process the GitHub repository.";
-        await finishRun(runId, {
-            status: 'failed',
-            usage: error.usage,
-            errorMessage: ai?.providerMessage ? `${message} (${ai.providerMessage})` : message,
-        });
-
-        if (!res.headersSent) {
-            res.status(ai?.status || error.statusCode || 500).json({ error: message, code: ai?.code });
-        }
+    if (duplicate) {
+        return res.status(409).json({ error: "A generation for this project is already waiting to start.", code: 'already_queued', jobId });
     }
+    res.status(202).json({ message: "Generation queued.", jobId, tenant: tenantName, version: projectName });
+});
+
+// --- Job status and cancellation (members of the job's project) ---
+async function loadJobForMember(req, res, allowedRoles) {
+    const job = await getJob(req.params.id);
+    if (!job) {
+        res.status(404).json({ error: 'Job not found' });
+        return null;
+    }
+    const { data: project } = await supabase.from('projects').select('user_id').eq('id', job.project_id).maybeSingle();
+    let role = project?.user_id === req.user.id ? 'admin' : null;
+    if (!role) {
+        const { data: member } = await supabase
+            .from('project_members')
+            .select('role')
+            .eq('project_id', job.project_id)
+            .eq('user_id', req.user.id)
+            .maybeSingle();
+        role = member?.role || null;
+    }
+    if (!role) {
+        res.status(404).json({ error: 'Job not found' });
+        return null;
+    }
+    if (!allowedRoles.includes(role)) {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return null;
+    }
+    return job;
+}
+
+app.get('/api/jobs/:id', requireAuth, async (req, res) => {
+    const job = await loadJobForMember(req, res, ['admin', 'editor', 'viewer']);
+    if (job) res.json({ job });
+});
+
+app.post('/api/jobs/:id/cancel', csrfProtection, requireAuth, async (req, res) => {
+    const job = await loadJobForMember(req, res, ['admin', 'editor']);
+    if (!job) return;
+    if (!['queued', 'running'].includes(job.status)) {
+        return res.status(409).json({ error: `This job has already ${job.status === 'successful' ? 'finished' : job.status === 'cancelled' ? 'been cancelled' : 'failed'}.`, job });
+    }
+    res.json({ job: await cancelJob(job.id) });
 });
 
 // --- NEW: Two-Way GitHub Sync Route ---
@@ -1044,9 +1008,13 @@ app.get('/llms.txt', (req, res) => {
 });
 
 const PORT = config.port;
+const worker = createWorker(config.jobs);
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     logOptionalFeatures();
+    if (config.jobs.concurrency > 0) worker.start();
+    else console.log('[Worker] WORKER_CONCURRENCY=0: this server runs no jobs. Start `npm run worker` to process them.');
 
     // Auto-regenerate skill.md on every server start
     try {
@@ -1056,3 +1024,16 @@ app.listen(PORT, () => {
         console.error('[Skill] Failed to auto-generate skill.md:', err.message);
     }
 });
+
+// On shutdown (deploy, restart, `node --watch` reload) hand running jobs back to the queue
+// so they start again right away instead of waiting to be detected as stalled.
+let shuttingDown = false;
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Server] ${signal} received: handing running jobs back to the queue.`);
+    await worker.stop();
+    process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

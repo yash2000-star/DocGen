@@ -50,8 +50,12 @@ function AuthListener() {
           console.log('Session refreshed');
         }
         if (event === 'SIGNED_IN' && session?.user) {
-          handleFirstLogin(session.user);
-          claimOrphanProjects(); 
+          // Supabase runs this callback while holding its auth lock: calling Supabase here
+          // directly deadlocks every other auth call (pages hang on "Loading..."). Defer it.
+          setTimeout(() => {
+            handleFirstLogin(session.user);
+            claimOrphanProjects();
+          }, 0);
           
           // --- THE LOOP FIX ---
           // Only redirect to the dashboard if they are on a public page!

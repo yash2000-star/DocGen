@@ -1,22 +1,16 @@
 const simpleGit = require("simple-git");
 const path = require("path");
 const fs = require("fs");
-const { REPOS_DIR } = require("./lib/paths");
 
-// Clones into repos/<tenant>/<project> so two tenants with the same repo name don't collide.
-async function cloneRepo(repoUrl, tenantName, projectName) {
-    const git = simpleGit();
-
-    const targetPath = path.join(REPOS_DIR, tenantName, projectName);
-
-    if (fs.existsSync(targetPath)) {
-        fs.rmSync(targetPath, { recursive: true, force: true });
-        console.log(`Delete old repo cache: ${tenantName}/${projectName}`);
-    }
+// Shallow-clones a repository into targetPath, replacing anything already there.
+// Each job clones into its own folder (see generationPipeline.createWorkspace), so two
+// runs for the same project never share or delete each other's checkout.
+async function cloneRepo(repoUrl, targetPath) {
+    fs.rmSync(targetPath, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 
     console.log(`Cloning repository from ${repoUrl}...`);
-    await git.clone(repoUrl, targetPath, ["--depth", "1"]);
+    await simpleGit().clone(repoUrl, targetPath, ["--depth", "1"]);
     console.log(`Successfully cloned to ${targetPath}`);
 
     return targetPath;

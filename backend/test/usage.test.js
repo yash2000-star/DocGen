@@ -14,3 +14,15 @@ test("adds up tokens across calls and leaves other methods working", async () =>
     assert.deepEqual(totals, { calls: 2, inputTokens: 20, outputTokens: 6 });
     assert.deepEqual((await metered.testConnection()).models, [{ id: "m" }]);
 });
+
+test("meterClient remembers the last failed call's error", async () => {
+    const boom = new Error("overloaded");
+    let fail = true;
+    const { client, lastError } = meterClient({ generateText: async () => { if (fail) throw boom; return { text: "ok", usage: {} }; } });
+    assert.equal(lastError(), null);
+    await assert.rejects(client.generateText({}), /overloaded/);
+    assert.equal(lastError(), boom);
+    fail = false;
+    await client.generateText({});
+    assert.equal(lastError(), boom);
+});
