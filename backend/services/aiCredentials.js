@@ -7,6 +7,7 @@ const supabase = require("../lib/supabase");
 const { config } = require("../config");
 const { encryptSecret, decryptSecret, keyHint } = require("../lib/secretBox");
 const { checkBaseUrl } = require("../lib/urlSafety");
+const { publicOnlyFetch } = require("../lib/safeFetch");
 const { getProvider } = require("../ai/providers");
 const { createLLMClient, LLMError } = require("../ai");
 
@@ -57,7 +58,12 @@ function cleanModel(value) {
 }
 
 // Endpoints users type in themselves must not redirect the server somewhere else.
+// User-chosen endpoints: no redirects, and (unless self-hosting is allowed) public
+// addresses only, checked again when connecting so DNS rebinding can't reach internal hosts.
 const noRedirectFetch = (url, init = {}) => fetch(url, { ...init, redirect: "error" });
+const userEndpointFetch = (url, init = {}) => config.byok.allowPrivateEndpoints
+    ? noRedirectFetch(url, init)
+    : publicOnlyFetch(url, { ...init, redirect: "error" });
 
 async function resolveBaseUrl(definition, requestedBaseUrl) {
     if (!definition.baseUrlEditable) return null;
@@ -77,7 +83,7 @@ function buildClient(definition, apiKey, baseUrl) {
         provider: definition.id,
         apiKey: apiKey || undefined,
         baseUrl: baseUrl || undefined,
-        fetch: definition.baseUrlEditable ? noRedirectFetch : undefined,
+        fetch: definition.baseUrlEditable ? userEndpointFetch : undefined,
     });
 }
 

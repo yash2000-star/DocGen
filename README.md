@@ -2,7 +2,7 @@
 
 DocGen turns a GitHub repository into a polished, Mintlify-style documentation site, written by **your own AI**: connect a Claude, OpenAI, Gemini, OpenRouter or self-hosted model key, and DocGen does the rest. DocGen itself never pays for or resells AI. An AI "architect" plans the site, a "ghostwriter" writes each page, and a "critic" cleans up the result. You get introduction, quickstart, guide and reference pages instead of one page per file.
 
-> **Status:** early development. The core flow (connect your AI key → import a repo → generate → view docs → Ask AI) works locally, with generation running as background jobs. Security hardening is next on the roadmap.
+> **Status:** early development. The core flow (connect your AI key → import a repo → generate → view docs → Ask AI) works locally, with generation running as background jobs and the security basics in place (see [Security](#security)).
 
 ## How it works
 
@@ -71,7 +71,7 @@ Fill in the values. You'll find the Supabase URL and keys under **Project Settin
 | `backend/.env` | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Lets the backend write data. Keep it secret. |
 | `backend/.env` | `AI_KEY_ENCRYPTION_KEY` | Yes, to generate docs | Encrypts the provider keys users connect. Generate with `openssl rand -base64 32` and keep a backup. |
 | `backend/.env` | `PREVIEW_AI_PROVIDER`, `PREVIEW_AI_API_KEY` | No | A server-paid AI key for the anonymous free preview. Off when empty. |
-| `backend/.env` | `GITHUB_WEBHOOK_SECRET` | No | Regenerate docs on every push. Off when empty. |
+| `backend/.env` | `TRUST_PROXY` | In production behind a proxy | Proxy hops (usually `1`), so rate limits see visitors' real IPs |
 | `backend/.env` | `RAZORPAY_*` | No | Billing. Leave empty to turn it off. |
 | `backend/.env` | `EMAIL_USER`, `EMAIL_PASS` | No | "Your docs are ready" emails |
 | `frontend/.env` | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Yes | Sign-in and dashboard data |
@@ -102,7 +102,7 @@ Go to **Import repository**: it links to **AI providers** (`/settings/ai`, also 
 | Ollama | A running Ollama server (default `http://localhost:11434/v1`), no key |
 | Any OpenAI-compatible endpoint | Its base URL, and a key if it needs one |
 
-DocGen tests the key with the provider before saving it, then stores it encrypted. The browser only ever sees the last 4 characters. Your first connected provider becomes your default, and generation uses your default provider's writer and critic models. Then import a public GitHub repository.
+DocGen tests the key with the provider before saving it, then stores it encrypted. The browser only ever sees the last 4 characters. Your first connected provider becomes your default, and generation uses your default provider's writer and critic models. Then import one of your own public GitHub repositories (you need to be signed in with GitHub).
 
 > In production (`NODE_ENV=production`), endpoints on localhost or private networks are blocked unless you set `ALLOW_PRIVATE_AI_ENDPOINTS=true`.
 
@@ -110,7 +110,25 @@ To try the anonymous free preview, set `PREVIEW_AI_PROVIDER` and `PREVIEW_AI_API
 
 ### Optional: update docs on every push
 
-Set `GITHUB_WEBHOOK_SECRET`, then add a webhook to the repository on GitHub: payload URL `https://<your-backend>/api/webhook`, content type `application/json`, the same secret, and the **push** event. Pages for changed files are rewritten with the project owner's AI key, as a background job. Unsigned requests are refused.
+Open the project's **Settings → Git settings**. It shows the payload URL and the project's own webhook secret. On GitHub, add a webhook to the repository with that URL and secret, content type `application/json`, and the **push** event. Pages for changed files are rewritten with the project owner's AI key, as a background job. Pushes that aren't signed with that project's secret are refused.
+
+## Security
+
+What protects DocGen users, and where it lives:
+
+- **Who owns a docs site:** `/docs/<owner>/<repo>` can only be created or claimed by the GitHub user `<owner>`, from that repository. The database enforces this (`supabase/migrations/20261019000000_security_hardening.sql`), so it holds even for direct API calls. Sign-in with GitHub is needed to import repositories. Organization repositories aren't supported yet; they need a GitHub App to verify membership.
+- **AI keys:** encrypted with AES-256-GCM (`AI_KEY_ENCRYPTION_KEY`) and never sent back to the browser. Custom AI endpoints can't point at localhost or private networks in production. The address is checked again when connecting, so DNS rebinding can't get around it.
+- **Generated pages:** compiled on the server into a tree with no code. Nothing in a page can run in readers' browsers (see step 4 in [How it works](#how-it-works)).
+- **API playground ("Try it"):** the backend proxy only calls public internet addresses, follows no redirects, sends no cookies or credentials, and limits time (10 s), response size (1 MB) and rate.
+- **Webhooks:** each project has its own secret, stored encrypted. A push must be signed with the secret of the project it's for.
+- **Cross-site requests:** the dashboard API authenticates with a Bearer token, and state-changing requests from other origins are refused.
+- **Abuse limits:** Ask AI, free previews (per visitor and per day), the API playground and webhooks are rate limited. Set `TRUST_PROXY` in production so limits apply per visitor.
+- **Data exposure:** job payloads, worker ids and webhook secrets are hidden from users by database grants. The agent (MCP) endpoint serves only published pages. Errors never include stack traces.
+- **Dependencies:** `npm audit` is clean for the root, backend and frontend packages at the time of writing. Run it before deploying.
+
+Known gaps:
+- Custom domains aren't verified yet, so a project can reserve a domain it doesn't own. It only takes effect if that domain's DNS points at DocGen.
+- Rate limits are kept in memory, so each backend instance counts separately. The daily preview cap is counted in the database.
 
 ## Tests
 
@@ -128,6 +146,9 @@ npm --prefix backend test
 | Ask AI says it isn't set up for these docs | The project owner hasn't connected an AI provider. |
 | A page says "This page has a syntax error on line N" | The page's MDX doesn't compile, usually after a manual edit. Fix that line in the editor, which refuses to publish pages with syntax errors. |
 | Sign-in redirects to the wrong place | Add `http://localhost:5173/**` to Supabase redirect URLs. |
+| "You can only import repositories under your GitHub account" | Docs at `/docs/<owner>/<repo>` belong to the GitHub user `<owner>`. Sign in with that GitHub account. Organization repositories aren't supported yet. |
+| "Sign in with GitHub to import repositories" | You signed in with email. Sign in with GitHub instead. |
+| The API playground says it "can only call public APIs" | It can't reach localhost or private networks in production. For local testing, set `API_PLAYGROUND_ALLOW_PRIVATE=true`. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
 | "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
@@ -151,6 +172,8 @@ npm --prefix backend test
 | `backend/mdx/safeMdx.js` | Compiles a page into a code-free render tree |
 | `frontend/src/components/mdx/SafeMdxRenderer.jsx` | Draws a compiled page in the browser |
 | `backend/config.js` | All environment configuration |
+| `backend/lib/safeFetch.js` | `fetch` that only connects to public addresses (custom AI endpoints, API playground) |
+| `backend/services/webhookSecrets.js` | Per-project GitHub webhook secrets |
 | `build/build.js` | Static build, search index and Ask AI section index |
 | `frontend/src/pages/DocEngine.jsx` | Public docs viewer |
 | `supabase/migrations/` | Database schema, RLS policies, SQL functions |

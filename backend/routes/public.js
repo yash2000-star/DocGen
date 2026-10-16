@@ -5,14 +5,37 @@ const { getPreviewLLM } = require("../services/aiCredentials");
 const { enqueueJob, getJob } = require("../jobs/queue");
 const { isSafeSegment } = require("../lib/paths");
 
+const { config } = require("../config");
+const { createRateLimiter } = require("../lib/rateLimit");
+
 const router = express.Router();
+
+// Each visitor (IP) may request a few previews an hour (cached ones included).
+const previewLimitPerVisitor = createRateLimiter({
+    windowMs: 60 * 60 * 1000,
+    max: config.preview.perVisitorPerHour,
+    key: (req) => req.ip,
+});
+
+// The server's daily budget of new previews, counted in the database so it holds across
+// restarts and multiple backend instances.
+async function dailyPreviewBudgetLeft() {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count, error } = await supabase
+        .from('build_events')
+        .select('id', { count: 'exact', head: true })
+        .eq('event_type', 'preview')
+        .gte('created_at', since);
+    if (error) throw error;
+    return config.preview.dailyLimit - (count || 0);
+}
 
 // PUBLIC ROUTE: No auth required, but strictly limited!
 // Queues a small preview (config.preview.maxPages pages) of a public GitHub repo and
 // returns a job id to follow with GET /api/public/jobs/:id.
 // Anonymous visitors have no AI key, so this uses the server's own preview credential
 // (PREVIEW_AI_*). Without one the preview is off.
-router.post("/github", async (req, res) => {
+router.post("/github", previewLimitPerVisitor, async (req, res) => {
     const tenantName  = typeof req.body.tenantName === "string" ? req.body.tenantName.trim() : "";
     const projectName = typeof req.body.projectName === "string" ? req.body.projectName.trim() : "";
     const email = typeof req.body.email === "string" && validator.isEmail(req.body.email.trim())
@@ -69,6 +92,11 @@ router.post("/github", async (req, res) => {
     const llm = getPreviewLLM();
     if (!llm) {
         return res.status(503).json({ error: "Free previews are turned off on this server. Sign in and connect your own AI provider to generate docs." });
+    }
+
+    if (await dailyPreviewBudgetLeft() <= 0) {
+        res.set("Retry-After", "3600");
+        return res.status(429).json({ error: "Free previews are busy today. Try again tomorrow, or sign in and use your own AI provider." });
     }
 
     let projectId = existingProject?.id;

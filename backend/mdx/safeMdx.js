@@ -21,7 +21,7 @@ const remarkMdx = require("remark-mdx").default;
 const remarkGfm = require("remark-gfm").default;
 const remarkRehype = require("remark-rehype").default;
 const GithubSlugger = require("github-slugger").default;
-const matter = require("gray-matter");
+const { parseFrontmatter } = require("../../lib/frontmatter");
 const { COMPONENTS, HTML_ELEMENTS, URL_PROPS } = require("./components");
 
 const MDX_JSX = ["mdxJsxFlowElement", "mdxJsxTextElement"];
@@ -267,7 +267,7 @@ function toRenderTree(node, slugger, parentTag) {
  */
 function compileSafeMdx(source) {
     const text = String(source || "");
-    const content = text.trimStart().startsWith("---") ? matter(text).content : text;
+    const content = parseFrontmatter(text).content;
     // Report error lines against the whole file, frontmatter included.
     const lineOffset = content && text.indexOf(content) > 0 ? text.slice(0, text.indexOf(content)).split("\n").length - 1 : 0;
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { supabase } from "../lib/auth";
+import { supabase, getGithubLogin } from "../lib/auth";
 import { createProject } from "../lib/projects";
 import Navbar from "../components/dashboard/Navbar";
 import { apiFetch } from '../lib/api';
@@ -11,6 +11,12 @@ async function loadJob(jobId) {
   const res = await apiFetch(`/api/jobs/${jobId}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()).job;
+}
+
+// https://github.com/<owner>/<repo>[.git][/] → { owner, repo }, or null.
+function parseRepoUrl(url) {
+  const match = String(url).trim().match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  return match ? { owner: match[1], repo: match[2] } : null;
 }
 
 export default function NewProject() {
@@ -29,6 +35,12 @@ export default function NewProject() {
   // "checking" | "ready" | "missing" (no provider connected) | "disabled" (server can't store keys)
   const [aiStatus, setAiStatus] = useState("checking");
 
+  // undefined while loading, then the GitHub username or null (signed in with email only).
+  const [githubLogin, setGithubLogin] = useState(undefined);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setGithubLogin(getGithubLogin(data?.user)));
+  }, []);
+
   // Docs are written with the user's own AI provider, so check one is connected.
   useEffect(() => {
     apiFetch("/api/ai/credentials")
@@ -40,35 +52,42 @@ export default function NewProject() {
       .catch(() => setAiStatus("ready")); // Backend unreachable: let the submit report it.
   }, []);
 
+  // The docs live at /docs/<owner>/<repo>, so the project name is the repository's name.
   useEffect(() => {
     const passedRepo = searchParams.get("repo");
     if (passedRepo) {
       setRepoUrl(passedRepo);
-      const parts = passedRepo.split("/");
-      const extracted = parts[parts.length - 1];
-      if (extracted) setProjectName(extracted.replace(".git", ""));
+      setProjectName(parseRepoUrl(passedRepo)?.repo || "");
     }
   }, [searchParams]);
 
   const handleUrlChange = (e) => {
     const url = e.target.value;
     setRepoUrl(url);
-    const parts = url.split("/");
-    const extracted = parts[parts.length - 1];
-    if (extracted) setProjectName(extracted.replace(".git", ""));
+    setProjectName(parseRepoUrl(url)?.repo || "");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     
-    if (!repoUrl || !projectName) {
-      setError("Please fill in all fields");
+    const parsed = parseRepoUrl(repoUrl);
+    if (!parsed) {
+      setError("Enter a GitHub repository URL like https://github.com/<owner>/<repo>.");
       return;
     }
 
+    // Docs for github.com/<owner>/<repo> can only be created by <owner>.
     const { data: { user } } = await supabase.auth.getUser();
-    const tenantName = user.user_metadata?.user_name || user.email.split("@")[0];
+    if (!githubLogin) {
+      setError("Sign in with GitHub to import your repositories. DocGen publishes docs under your GitHub username, so it needs to know it.");
+      return;
+    }
+    if (parsed.owner.toLowerCase() !== githubLogin.toLowerCase()) {
+      setError(`You can only import repositories under your GitHub account (${githubLogin}). Organization repositories aren't supported yet.`);
+      return;
+    }
+    const tenantName = githubLogin;
 
     // --- BULLETPROOF PRE-FLIGHT CHECK ---
     // Using .limit(1) prevents crashes if duplicates accidentally exist
@@ -188,6 +207,12 @@ export default function NewProject() {
             </div>
           )}
 
+          {step === "form" && githubLogin === null && (
+            <div data-testid="github-notice" style={{ marginBottom: "24px", padding: "14px 16px", backgroundColor: "#eff6ff", color: "#1e3a8a", borderRadius: "8px", fontSize: "14px", border: "1px solid #bfdbfe" }}>
+              <strong>Sign in with GitHub to import repositories.</strong> Docs are published at /docs/&lt;owner&gt;/&lt;repo&gt;, so DocGen only lets the repository's owner create them.
+            </div>
+          )}
+
           {step === "form" && (
             <form onSubmit={handleSubmit}>
               <h2 style={{ fontSize: "24px", fontWeight: "600", color: "var(--text-heading)", margin: "0 0 8px 0" }}>Import Repository</h2>
@@ -200,12 +225,12 @@ export default function NewProject() {
 
               <div style={{ marginBottom: "32px" }}>
                 <label style={{ display: "block", marginBottom: "8px", fontSize: "14px", fontWeight: "500", color: "var(--text-heading)" }}>Project Name</label>
-                <input type="text" value={projectName} onChange={(e) => setProjectName(e.target.value)} required style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-main)", color: "var(--text-main)", fontSize: "15px", outline: "none" }} />
+                <input type="text" value={projectName} readOnly placeholder="Taken from the repository URL" style={{ width: "100%", padding: "10px 12px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "var(--bg-sidebar)", color: "var(--text-muted)", fontSize: "15px", outline: "none" }} />
               </div>
 
               <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
                 <button type="button" onClick={() => navigate("/dashboard")} style={{ padding: "10px 16px", background: "none", border: "1px solid var(--border-color)", borderRadius: "8px", color: "var(--text-main)", fontSize: "14px", fontWeight: "500", cursor: "pointer" }}>Cancel</button>
-                <button type="submit" disabled={aiStatus !== "ready"} style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: aiStatus === "ready" ? "pointer" : "not-allowed", opacity: aiStatus === "ready" ? 1 : 0.5 }}>Generate Docs</button>
+                <button type="submit" disabled={aiStatus !== "ready" || !githubLogin} style={{ padding: "10px 16px", backgroundColor: "var(--primary-brand)", border: "none", borderRadius: "8px", color: "#fff", fontSize: "14px", fontWeight: "500", cursor: aiStatus === "ready" && githubLogin ? "pointer" : "not-allowed", opacity: aiStatus === "ready" && githubLogin ? 1 : 0.5 }}>Generate Docs</button>
               </div>
             </form>
           )}

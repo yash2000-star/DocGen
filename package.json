@@ -16,7 +16,7 @@
     "@supabase/supabase-js": "^2.98.0",
     "dotenv": "^17.3.1",
     "github-slugger": "^2.0.0",
-    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.3.2",
     "rehype-stringify": "^10.0.1",
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",

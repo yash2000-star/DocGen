@@ -6,7 +6,7 @@ const remarkRehype = require("remark-rehype").default;
 const rehypeStringify = require("rehype-stringify").default;
 const { visit } = require("unist-util-visit");
 const GithubSlugger = require("github-slugger").default;
-const matter = require("gray-matter");
+const { parseFrontmatter } = require("../lib/frontmatter");
 
 // Ask AI search index (Postgres full-text search, no AI calls needed)
 const supabase = require("../backend/lib/supabase");
@@ -79,7 +79,7 @@ function addHeadingIds() {
 async function convertMarkdownToHTML(filePath) {
   const markdown = fs.readFileSync(filePath, "utf-8");
 
-  const parsed = matter(markdown);
+  const parsed = parseFrontmatter(markdown);
   const content = parsed.content;
   const data = parsed.data;
 

@@ -5,8 +5,20 @@ const { LLMError, codeFromStatus } = require("../errors");
 
 const DEFAULT_MAX_TOKENS = 16000;
 
+// True if the connection was refused because the endpoint resolves to a private address
+// (lib/safeFetch.js). The SDK wraps it, so look through the cause chain.
+function isBlockedAddress(error) {
+    for (let e = error, depth = 0; e && depth < 5; e = e.cause, depth++) {
+        if (e.code === "EBLOCKEDADDRESS") return true;
+    }
+    return false;
+}
+
 function toLLMError(error, provider) {
     if (error instanceof LLMError) return error;
+    if (isBlockedAddress(error)) {
+        return new LLMError("invalid_base_url", { provider, providerMessage: "This server only connects to public AI endpoints.", cause: error });
+    }
     if (error instanceof OpenAI.APIConnectionError) {
         return new LLMError("network", { provider, providerMessage: error.message, cause: error });
     }

@@ -42,7 +42,8 @@ export default function Explore() {
           body: JSON.stringify({ projectName: version, tenantName: tenant, email })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to start preview generation.");
+        // Errors are a string, or { message } from the rate limiter.
+        if (!res.ok) throw new Error((typeof data.error === "string" ? data.error : data.error?.message) || "Failed to start preview generation.");
 
         if (data.cached) {
           setIsCached(true);

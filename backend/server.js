@@ -11,8 +11,6 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const cookieParser = require('cookie-parser');
-const csrf         = require('csurf');
 const helmet = require('helmet');
 const crypto = require('crypto');
 const { buildProject, filterChangedFiles } = require("./services/generationPipeline");
@@ -20,10 +18,13 @@ const { DOCS_DIR, DIST_DIR, isSafeSegment, parseGithubRepoUrl } = require("./lib
 const supabase = require("./lib/supabase");
 const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
 const { createRateLimiter } = require("./lib/rateLimit");
+const { createOriginCheck } = require("./lib/originCheck");
 const { enqueueJob, enqueueWebhookUpdate, getJob, cancelJob } = require("./jobs/queue");
 const { createWorker } = require("./jobs/worker");
 const { describeAiError } = require("./ai/httpErrors");
 const { compileSafeMdx } = require("./mdx/safeMdx");
+const { proxyRequest, ProxyError } = require("./services/apiProxy");
+const { getWebhookSecret, getOrCreateWebhookSecret, rotateWebhookSecret, hasValidSignature } = require("./services/webhookSecrets");
 
 // Billing is optional: Razorpay is only set up when its keys are present.
 let razorpay = null;
@@ -38,6 +39,9 @@ if (config.razorpay.enabled) {
 const askAI = require("./ai.service");
 
 const app = express();
+// Behind a load balancer or reverse proxy, set TRUST_PROXY (e.g. 1) so req.ip is the
+// visitor's address and rate limits apply per visitor, not to the proxy as a whole.
+if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
 const publicRoutes = require('./routes/public');
 const mcpRoutes = require('./routes/mcp');
 const { createAiRouter } = require('./routes/ai');
@@ -52,10 +56,10 @@ app.use(cors({
 app.use((req, res, next) => {
   if (req.path === '/api/billing/webhook' || req.path === '/api/webhook') {
     // Keep the raw body for Razorpay and GitHub signature verification
-    express.raw({ type: 'application/json' })(req, res, next);
+    express.raw({ type: 'application/json', limit: '5mb' })(req, res, next);
   } else {
     // For all other routes, parse JSON normally
-    express.json()(req, res, next);
+    express.json({ limit: '1mb' })(req, res, next);
   }
 });
 
@@ -75,7 +79,9 @@ app.post('/api/billing/webhook', async (req, res) => {
             .update(req.body) // This works because of the raw body exception we added!
             .digest('hex');
 
-        if (webhookSignature !== expectedSignature) {
+        const received = Buffer.from(String(webhookSignature || ''));
+        const expected = Buffer.from(expectedSignature);
+        if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
             console.error('Invalid Razorpay webhook signature');
             return res.status(400).json({ error: 'Invalid signature' });
         }
@@ -161,7 +167,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:  ["'self'"],
-      scriptSrc:   ["'self'", "'unsafe-eval'"],
+      scriptSrc:   ["'self'"],
+      objectSrc:   ["'none'"],
+      frameAncestors: ["'self'"],
       styleSrc:    ["'self'", "'unsafe-inline'"],
       imgSrc:      ["'self'", 'data:', 'https:'],
       connectSrc:  ["'self'", 'https://*.supabase.co'],
@@ -170,20 +178,9 @@ app.use(helmet({
   },
 }));
 
-// --- SECURITY: Cookie Parser & CSRF Setup ---
-app.use(cookieParser());
-
-const csrfProtection = csrf({
-    cookie: {
-        httpOnly: true,
-        secure:   process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-    }
-});
-
-app.get('/api/csrf-token', csrfProtection, (req, res) => {
-    res.json({ csrfToken: req.csrfToken() });
-});
+// --- SECURITY: cross-site requests ---
+// State-changing dashboard requests must come from the dashboard (see lib/originCheck.js).
+const csrfProtection = createOriginCheck([config.frontendUrl]);
 
 app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -445,45 +442,46 @@ app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async 
 });
 
 // GitHub push webhook: regenerates docs for changed files with the project owner's AI key.
-// No login token, so every delivery must carry GitHub's signature for GITHUB_WEBHOOK_SECRET;
-// otherwise anyone could trigger generation and spend the owner's AI credits.
-function hasValidGithubSignature(req) {
-    const signature = String(req.headers['x-hub-signature-256'] || '');
-    const expected = 'sha256=' + crypto.createHmac('sha256', config.github.webhookSecret).update(req.body).digest('hex');
-    return signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-}
-
-app.post("/api/webhook", async (req, res) => {
-    if (!config.github.webhookSecret) {
-        return res.status(503).json({ message: "GitHub webhook is not configured on this server." });
+// GitHub push webhook. There's no login token, so every delivery must be signed with the
+// webhook secret of the project it's for (Settings → Integrations); otherwise anyone could
+// trigger generation and spend the owner's AI credits. Each project has its own secret, so
+// one user can't sign pushes for another user's project.
+const webhookLimit = createRateLimiter({ windowMs: 60 * 1000, max: 60, key: (req) => req.ip });
+app.post("/api/webhook", webhookLimit, async (req, res) => {
+    if (!config.byok.enabled) {
+        return res.status(503).json({ message: "GitHub webhooks need AI_KEY_ENCRYPTION_KEY to be set on this server." });
     }
-    if (!Buffer.isBuffer(req.body) || !hasValidGithubSignature(req)) {
-        return res.status(401).json({ message: "Invalid or missing GitHub signature." });
+    if (!Buffer.isBuffer(req.body)) {
+        return res.status(400).json({ message: "Expected a JSON body (content type application/json)." });
     }
 
+    // Read which repository the delivery claims to be for, then check the signature with
+    // that project's secret. Nothing in the payload is trusted until the signature matches.
     let payload;
     try {
         payload = JSON.parse(req.body.toString('utf8'));
     } catch {
         return res.status(400).json({ message: "Invalid JSON payload." });
     }
+    const projectName = readName(payload?.repository?.name);
+    const tenantName = readName(payload?.repository?.owner?.login);
+    const { data: project } = tenantName && projectName
+        ? await supabase.from('projects').select('id, user_id').eq('tenant_name', tenantName).eq('project_name', projectName).maybeSingle()
+        : { data: null };
+    const secret = project ? await getWebhookSecret(project.id) : null;
+    if (!hasValidSignature(req.body, req.headers['x-hub-signature-256'], secret)) {
+        // Same answer whether the project is unknown or the signature is wrong.
+        return res.status(401).json({ message: "Invalid or missing GitHub signature." });
+    }
 
     if (req.headers['x-github-event'] === 'ping') {
-        console.log("👋 [Webhook] Received GitHub ping. The tunnel is perfectly connected!");
-        return res.status(200).json({ message: "Pong! Connection successful." });
+        return res.status(200).json({ message: "Pong! The webhook is connected." });
+    }
+    if (!Array.isArray(payload.commits)) {
+        return res.status(400).json({ message: "Not a valid push event." });
     }
 
-    if (!payload.commits || !payload.repository) {
-        return res.status(400).json({ message: "Not a valid push event." })
-    }
-
-    const repoUrl = payload.repository.clone_url;
-    const projectName = readName(payload.repository.name);
-    const tenantName = readName(payload.repository.owner?.login);
-
-    if (!projectName || !tenantName) {
-        return res.status(400).json({ message: "Invalid repository name." });
-    }
+    const repoUrl = `https://github.com/${tenantName}/${projectName}`;
 
     const changedFiles = [];
     for (const commit of payload.commits) {
@@ -498,13 +496,7 @@ app.post("/api/webhook", async (req, res) => {
     }
 
     // Updates are written with the project owner's own AI key.
-    const { data: project } = await supabase
-        .from('projects')
-        .select('id, user_id')
-        .eq('tenant_name', tenantName)
-        .eq('project_name', projectName)
-        .maybeSingle();
-    if (!project?.user_id) {
+    if (!project.user_id) {
         return res.status(200).json({ message: "No project owner to write docs for. Skipping." });
     }
 
@@ -544,8 +536,13 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         return res.status(400).json({ error: "Missing or invalid repoUrl, projectName, or tenantName" });
     }
 
-    if (!parseGithubRepoUrl(repoUrl)) {
+    const repo = parseGithubRepoUrl(repoUrl);
+    if (!repo) {
         return res.status(400).json({ error: "Repository URL must look like https://github.com/<owner>/<repo>." });
+    }
+    // The docs at /docs/<owner>/<repo> may only be written from that repository.
+    if (repo.owner.toLowerCase() !== tenantName.toLowerCase() || repo.repo.toLowerCase() !== projectName.toLowerCase()) {
+        return res.status(400).json({ error: `This project can only be generated from https://github.com/${tenantName}/${projectName}.` });
     }
 
     const { data: project } = await supabase
@@ -582,6 +579,44 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
         return res.status(409).json({ error: "A generation for this project is already waiting to start.", code: 'already_queued', jobId });
     }
     res.status(202).json({ message: "Generation queued.", jobId, tenant: tenantName, version: projectName });
+});
+
+// --- GitHub webhook secret (project admins) ---
+// Shown in Settings → Integrations, to paste into the repository's webhook on GitHub.
+async function loadProjectForAdmin(req, res) {
+    const { data: project } = await supabase.from('projects').select('id, user_id').eq('id', req.params.id).maybeSingle()
+        .then((r) => r, () => ({ data: null }));
+    if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return null;
+    }
+    if (project.user_id !== req.user.id) {
+        const { data: member } = await supabase.from('project_members').select('role')
+            .eq('project_id', project.id).eq('user_id', req.user.id).maybeSingle();
+        if (!member) {
+            res.status(404).json({ error: 'Project not found' });
+            return null;
+        }
+        if (member.role !== 'admin') {
+            res.status(403).json({ error: 'Only project admins can see the webhook secret.' });
+            return null;
+        }
+    }
+    if (!config.byok.enabled) {
+        res.status(503).json({ error: "Webhooks need AI_KEY_ENCRYPTION_KEY to be set on this server." });
+        return null;
+    }
+    return project;
+}
+
+app.get('/api/projects/:id/webhook', requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res);
+    if (project) res.json({ secret: await getOrCreateWebhookSecret(project.id) });
+});
+
+app.post('/api/projects/:id/webhook/rotate', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res);
+    if (project) res.json({ secret: await rotateWebhookSecret(project.id) });
 });
 
 // --- Job status and cancellation (members of the job's project) ---
@@ -628,11 +663,13 @@ app.post('/api/jobs/:id/cancel', csrfProtection, requireAuth, async (req, res) =
 });
 
 // --- NEW: Two-Way GitHub Sync Route ---
-app.post("/api/github/save-config", csrfProtection, requireAuth, async (req, res) => {
+app.post("/api/github/save-config", csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     // We expect the frontend to pass the config object and the user's GitHub provider token
-    const { tenant, version, configData, githubToken } = req.body;
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+    const { configData, githubToken } = req.body;
 
-    if (!tenant || !version || !configData || !githubToken) {
+    if (!tenant || !version || !configData || typeof configData !== 'object' || typeof githubToken !== 'string' || !githubToken) {
         return res.status(400).json({ error: "Missing required sync data." });
     }
 
@@ -683,7 +720,7 @@ app.post("/api/github/save-config", csrfProtection, requireAuth, async (req, res
 
     } catch (error) {
         console.error("❌ GitHub Sync Error:", error);
-        res.status(500).json({ error: error.message });
+        res.status(502).json({ error: `GitHub refused the update: ${String(error.message).slice(0, 200)}` });
     }
 });
 
@@ -699,6 +736,20 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
     
     // We now accept 'navigation' from the frontend!
     const { primaryColor, logoUrl, fontFamily, darkMode, navigation } = req.body;
+
+    // These end up in the published site's CSS and <img> tags: only plain values.
+    if (primaryColor !== undefined && primaryColor !== '' && !/^#[0-9a-f]{3,8}$/i.test(String(primaryColor))) {
+        return res.status(400).json({ error: 'The primary color must be a hex color like #3b82f6.' });
+    }
+    if (logoUrl !== undefined && logoUrl !== '' && !/^(https:\/\/|\/(?!\/))[^\s"'<>()\\]*$/i.test(String(logoUrl))) {
+        return res.status(400).json({ error: 'The logo must be an https:// URL or a path on your docs site.' });
+    }
+    if (fontFamily !== undefined && fontFamily !== '' && !/^[\w \-,'"]{1,100}$/.test(String(fontFamily))) {
+        return res.status(400).json({ error: 'Invalid font family.' });
+    }
+    if (navigation !== undefined && (!Array.isArray(navigation) || JSON.stringify(navigation).length > 100000)) {
+        return res.status(400).json({ error: 'Invalid navigation.' });
+    }
 
     const configPath = path.join(DOCS_DIR, tenant, version, 'docgen.json');
     const configDir  = path.dirname(configPath);
@@ -813,41 +864,16 @@ app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'
     }
 });
 
-app.post("/api/proxy", async (req, res) => {
-    const { targetUrl, targetMethod, payload } = req.body;
-
-    if (!targetUrl || !targetMethod) {
-        return res.status(400).json({ error: "Missing targetUrl or targetMethod." });
-    }
-
+// "Try it" requests from the docs API playground. Public APIs only: see services/apiProxy.js.
+const proxyLimit = createRateLimiter({ windowMs: 60 * 1000, max: 30, key: (req) => req.ip });
+app.post("/api/proxy", proxyLimit, async (req, res) => {
     try {
-        console.log(`\n🔌 [Proxy] Forwarding ${targetMethod} request to: ${targetUrl}`);
-        
-        const fetchOptions = {
-            method: targetMethod,
-            headers: {
-                "Content-Type": "application/json",
-            }
-        };
-
-        if (payload && targetMethod !== "GET" && targetMethod !== "DELETE") {
-            fetchOptions.body = JSON.stringify(payload);
-        }
-
-        const externalResponse = await fetch(targetUrl, fetchOptions);
-        const data = await externalResponse.json().catch(() => ({}));
-
-        res.status(externalResponse.status).json({
-            status: externalResponse.status,
-            data: data
-        });
-
+        const result = await proxyRequest(req.body || {}, { allowPrivate: config.apiPlayground.allowPrivate });
+        res.status(200).json(result);
     } catch (error) {
-        console.error("❌ [Proxy] Request failed:", error.message);
-        res.status(500).json({ 
-            error: "Failed to reach the target URL.", 
-            details: error.message 
-        });
+        if (error instanceof ProxyError) return res.status(error.status).json({ error: error.message });
+        console.error("[Proxy] Unexpected error:", error);
+        res.status(500).json({ error: "The request failed." });
     }
 });
 
@@ -957,17 +983,13 @@ app.post("/api/ask", askLimitPerVisitor, askLimitPerSite, async (req, res) => {
 });
 
 // --- GLOBAL ERROR HANDLER ---
+// Answers in JSON and never sends stack traces or internal messages to the client.
 app.use((err, req, res, next) => {
-    // Catch CSRF token errors specifically
-    if (err.code === 'EBADCSRFTOKEN') {
-        console.error('🚫 CSRF Token missing or invalid for:', req.path);
-        return res.status(403).json({ 
-            error: 'Security token expired or invalid. Please refresh the page.' 
-        });
-    }
-    
-    // Pass any other errors down the line
-    next(err);
+    if (res.headersSent) return next(err);
+    // Errors from body parsing (malformed JSON, body too large) are the client's.
+    const status = err.status || err.statusCode || 500;
+    if (status >= 500) console.error(`[Server] ${req.method} ${req.path} failed:`, err);
+    res.status(status).json({ error: status < 500 && err.expose ? err.message : status < 500 ? 'Bad request.' : 'Internal server error.' });
 });
 
 // --- .WELL-KNOWN SKILL ROUTES (Public, for AI Agents) ---

@@ -1,6 +1,6 @@
 // Checks user-supplied base URLs before the server sends requests to them.
-// Known gap: DNS is checked here, not at connection time, so a hostname that changes its
-// DNS answer between the check and the request (DNS rebinding) isn't caught yet.
+// DNS is checked here for a clear error message, and again at connection time by
+// lib/safeFetch.js, so a hostname that changes its DNS answer (DNS rebinding) is caught too.
 // Without this, "Ollama" or "OpenAI-compatible" endpoints could be pointed at internal
 // services (cloud metadata, databases) and the server would call them on the user's behalf.
 const dns = require("dns").promises;
