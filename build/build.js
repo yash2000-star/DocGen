@@ -7,6 +7,7 @@ const rehypeStringify = require("rehype-stringify").default;
 const { visit } = require("unist-util-visit");
 const GithubSlugger = require("github-slugger").default;
 const { parseFrontmatter } = require("../lib/frontmatter");
+const { normalizeNavigation } = require("../lib/siteManifest");
 
 // Ask AI search index (Postgres full-text search, no AI calls needed)
 const supabase = require("../backend/lib/supabase");
@@ -303,6 +304,7 @@ const docs = [];
       route: doc.route,
       html: result.html,
       title,
+      description: typeof result.meta.description === "string" ? result.meta.description.trim().slice(0, 300) : "",
       order,
       tenant: doc.tenant,
       version: doc.version,
@@ -438,6 +440,22 @@ const docs = [];
       fs.writeFileSync(
         path.join(targetDir, "sidebar.json"),
         JSON.stringify(sidebar, null, 2),
+      );
+
+      // The site manifest: every page's title and description, and the navigation.
+      const manifestPages = {};
+      for (const doc of cleanDocs) manifestPages[doc.route] = { title: doc.title, description: doc.description || "", group: doc.group };
+      const firstGroupsByOrder = [...new Set(cleanDocs.map((doc) => doc.group))].map((group) => ({ group, pages: cleanDocs.filter((d) => d.group === group).map((d) => d.route) }));
+      const configuredNavigation = Array.isArray(siteConfig.navigation) && siteConfig.navigation.length ? siteConfig.navigation : firstGroupsByOrder;
+      fs.writeFileSync(
+        path.join(targetDir, "site.json"),
+        JSON.stringify({
+          name: siteConfig.name || version,
+          description: siteConfig.description || siteConfig.metadata?.["og:description"] || "",
+          pages: manifestPages,
+          navigation: normalizeNavigation(configuredNavigation, manifestPages),
+          builtAt: new Date().toISOString(),
+        }, null, 2),
       );
 
       const localSearchIndex = searchIndex

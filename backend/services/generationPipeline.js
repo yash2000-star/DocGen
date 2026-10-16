@@ -90,6 +90,7 @@ function defaultSiteConfig(blueprint, projectName) {
     return {
         "$schema": "https://mintlify.com/docs.json",
         "name": blueprint.projectName || projectName.charAt(0).toUpperCase() + projectName.slice(1),
+        "description": typeof blueprint.projectDescription === "string" ? blueprint.projectDescription.slice(0, 300) : "",
         "logo": { "light": "/logo/light.svg", "dark": "/logo/dark.svg" },
         "theme": "mint",
         "colors": { "primary": "#3b82f6", "light": "#ffffff", "dark": "#000000" }

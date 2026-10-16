@@ -12,6 +12,14 @@ const config = {
     nodeEnv: env.NODE_ENV || "development",
     port: Number(env.PORT) || 4000,
     frontendUrl: (env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, ""),
+    // Where readers reach this server: canonical URLs, sitemaps and llms.txt use it.
+    publicUrl: (env.PUBLIC_URL || `http://localhost:${Number(env.PORT) || 4000}`).replace(/\/+$/, ""),
+    // Serve the dashboard/docs app (frontend/dist) from this server too, so one process
+    // hosts everything. Build the frontend with VITE_API_URL set to PUBLIC_URL first.
+    frontend: {
+        serve: env.SERVE_FRONTEND === "true",
+        distDir: env.FRONTEND_DIST_DIR || path.join(__dirname, "..", "frontend", "dist"),
+    },
     // Express "trust proxy": false (default), a hop count like 1, or a list of proxy addresses.
     trustProxy: !env.TRUST_PROXY ? false : /^\d+$/.test(env.TRUST_PROXY) ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "true" ? true : env.TRUST_PROXY,
 
@@ -96,6 +104,14 @@ try {
     config.byok.configError = err.message;
 }
 config.byok.enabled = Boolean(config.byok.masterKey);
+
+// Hostnames of the app itself. Any other hostname pointed at this server is looked up as
+// a project's (verified) custom domain.
+config.appHostnames = [...new Set([
+    "localhost", "127.0.0.1",
+    ...[config.publicUrl, config.frontendUrl].map((url) => { try { return new URL(url).hostname; } catch { return ""; } }),
+    ...(env.APP_HOSTNAMES || "").split(",").map((h) => h.trim().toLowerCase()),
+].filter(Boolean))];
 
 config.razorpay.enabled = Boolean(config.razorpay.keyId && config.razorpay.keySecret);
 config.email.enabled = Boolean(config.email.user && config.email.pass);

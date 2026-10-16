@@ -9,6 +9,7 @@ import AiChat from "../components/AiChat";
 import Logo from "../components/Logo";
 import { applyTheme } from "../lib/applyTheme";
 import { docsBase, resolveDocHref } from "../lib/docLinks";
+import { tabsOf, tabForRoute, firstRoute } from "../lib/siteNav";
 import { initThemeMode, shouldHideToggle } from "../lib/toggleTheme";
 import { applyPreset } from "../lib/themes";
 
@@ -36,6 +37,23 @@ export default function DocEngine({ customTenant, customVersion }) {
   const [siteConfig, setSiteConfig] = useState(null);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [hideToggle, setHideToggle] = useState(false);
+  // site.json from the build: page titles/descriptions and navigation (with tabs).
+  const [site, setSite] = useState(null);
+
+  // On the site's own custom domain pages live at the root; otherwise under /docs/<tenant>/<project>.
+  const onCustomDomain = Boolean(customTenant);
+  const sitePrefix = `/docs/${tenant}/${version}`;
+  const linkBase = docsBase(tenant, version, onCustomDomain);
+
+  useEffect(() => {
+    if (!tenant || !version) return;
+    let cancelled = false;
+    fetch(`${import.meta.env.VITE_API_URL}/api/static/${tenant}/${version}/site.json`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (!cancelled) setSite(data); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tenant, version]);
 
   useEffect(() => {
     setIsPreview(window !== window.top);
@@ -45,10 +63,10 @@ export default function DocEngine({ customTenant, customVersion }) {
   const navigate = useNavigate();
   useEffect(() => {
     if (!tenant || !version) return;
-    const onDocChange = (event) => navigate(resolveDocHref(String(event.detail || ""), docsBase(tenant, version)));
+    const onDocChange = (event) => navigate(resolveDocHref(String(event.detail || ""), linkBase, sitePrefix));
     window.addEventListener("doc-change", onDocChange);
     return () => window.removeEventListener("doc-change", onDocChange);
-  }, [tenant, version, navigate]);
+  }, [tenant, version, navigate, linkBase, sitePrefix]);
 
  // Fetch the custom color theme if it exists
   useEffect(() => {
@@ -88,7 +106,11 @@ export default function DocEngine({ customTenant, customVersion }) {
   }, [tenant, version]);
 
   // Until docs.json has loaded we don't know which page to open by default.
-  const defaultRoute = configLoaded ? (firstPageRoute(siteConfig?.navigation) || "index") : null;
+  const navigation = site?.navigation || siteConfig?.navigation || [];
+  const defaultRoute = configLoaded ? (firstPageRoute(navigation) || "index") : null;
+  const currentRoute = params["*"] || defaultRoute;
+  const tabs = tabsOf(navigation);
+  const activeTab = tabForRoute(navigation, currentRoute);
 
   // Derive topbar links and CTA from config
   const topbarLinks = siteConfig?.topbarLinks || [];
@@ -206,6 +228,21 @@ export default function DocEngine({ customTenant, customVersion }) {
         </div>
       )}
 
+      {/* Tabs (e.g. Documentation / API reference), when the site has more than one */}
+      {!isPreview && tabs.length > 1 && (
+        <nav data-testid="docs-tabs" style={{ display: "flex", gap: "24px", padding: "0 24px", borderBottom: "1px solid var(--border-color, #e2e8f0)", backgroundColor: "var(--bg-main, #ffffff)", position: "relative", zIndex: 2 }}>
+          {tabs.map((tab) => {
+            const active = tab.tab === activeTab?.tab;
+            const target = firstRoute(tab.groups[0]);
+            return (
+              <Link key={tab.tab} to={`${linkBase}/${target}`} style={{ padding: "12px 0", fontSize: "14px", fontWeight: active ? 600 : 500, textDecoration: "none", color: active ? "var(--primary-brand)" : "var(--text-muted, #64748b)", borderBottom: active ? "2px solid var(--primary-brand)" : "2px solid transparent", marginBottom: "-1px" }}>
+                {tab.tab}
+              </Link>
+            );
+          })}
+        </nav>
+      )}
+
       {/* MAIN 3-COLUMN LAYOUT */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden", position: "relative", zIndex: 1 }}>
         
@@ -218,7 +255,7 @@ export default function DocEngine({ customTenant, customVersion }) {
           flexShrink: 0
         }}>
           {/* Passed the props down! */}
-          <Sidebar customTenant={tenant} customVersion={version} navigation={siteConfig?.navigation || []} />
+          <Sidebar navigation={activeTab?.groups || navigation} pages={site?.pages} linkBase={linkBase} />
         </div>
         
         {/* 2. Center Content (The actual Docs) */}
@@ -229,7 +266,7 @@ export default function DocEngine({ customTenant, customVersion }) {
             padding: "48px 32px" 
           }}>
             {/* Passed the props down! */}
-            <DocPage customTenant={tenant} customVersion={version} defaultRoute={defaultRoute} />
+            <DocPage customTenant={tenant} customVersion={version} defaultRoute={defaultRoute} linkBase={linkBase} sitePrefix={sitePrefix} site={site} navigation={navigation} />
           </div>
 
           {/* Step 7: Footer with Social Links */}

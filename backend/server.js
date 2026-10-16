@@ -26,6 +26,9 @@ const { describeAiError } = require("./ai/httpErrors");
 const { compileSafeMdx } = require("./mdx/safeMdx");
 const { proxyRequest, ProxyError } = require("./services/apiProxy");
 const { getWebhookSecret, getOrCreateWebhookSecret, rotateWebhookSecret, hasValidSignature } = require("./services/webhookSecrets");
+const customDomains = require("./services/customDomains");
+const { createSiteRouter, pageCsp } = require("./routes/site");
+const { loadSite } = require("./seo/site");
 
 // Billing is optional: Razorpay is only set up when its keys are present.
 let razorpay = null;
@@ -48,9 +51,13 @@ const mcpRoutes = require('./routes/mcp');
 const { createAiRouter } = require('./routes/ai');
 const { generateSkill, getSkillIndex } = require('../lib/generateSkill');
 
-app.use(cors({
-    origin: config.frontendUrl,
-    credentials: true 
+// The dashboard calls the API from FRONTEND_URL. Readers' endpoints (docs pages, search,
+// Ask AI, feedback) are anonymous and are also called from docs on custom domains, so they
+// accept any origin, without credentials.
+const PUBLIC_READER_PATHS = [/^\/api\/(static|page|docs|ask|feedback|domain|public)(\/|$)/, /^\/docs\//];
+app.use(cors((req, callback) => {
+    const isPublic = PUBLIC_READER_PATHS.some((pattern) => pattern.test(req.path));
+    callback(null, isPublic ? { origin: true, credentials: false } : { origin: config.frontendUrl, credentials: true });
 }));
 
 // --- WEBHOOK RAW BODY EXCEPTION ---
@@ -187,6 +194,9 @@ app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();
 });
+
+// Public docs as crawlable HTML, sitemaps, robots.txt, and verified custom domains.
+app.use(createSiteRouter({ config, findCustomDomain: customDomains.findVerifiedDomain }));
 
 app.use("/api/static", express.static(DIST_DIR));
 
@@ -388,7 +398,10 @@ async function checkProjectLimit(req, res, next) {
   next();
 }
 
-app.get("/", (req, res) => {
+app.get("/api/health", (req, res) => res.json({ ok: true }));
+
+// When this server also serves the app, "/" is the app's landing page.
+if (!config.frontend.serve) app.get("/", (req, res) => {
     res.send("Docs API is running smoothly!");
 });
 
@@ -586,7 +599,7 @@ app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'edito
 
 // --- GitHub webhook secret (project admins) ---
 // Shown in Settings → Integrations, to paste into the repository's webhook on GitHub.
-async function loadProjectForAdmin(req, res) {
+async function loadProjectForAdmin(req, res, { needsEncryption = true, what = "the webhook secret" } = {}) {
     const { data: project } = await supabase.from('projects').select('id, user_id').eq('id', req.params.id).maybeSingle()
         .then((r) => r, () => ({ data: null }));
     if (!project) {
@@ -601,16 +614,49 @@ async function loadProjectForAdmin(req, res) {
             return null;
         }
         if (member.role !== 'admin') {
-            res.status(403).json({ error: 'Only project admins can see the webhook secret.' });
+            res.status(403).json({ error: `Only project admins can manage ${what}.` });
             return null;
         }
     }
-    if (!config.byok.enabled) {
+    if (needsEncryption && !config.byok.enabled) {
         res.status(503).json({ error: "Webhooks need AI_KEY_ENCRYPTION_KEY to be set on this server." });
         return null;
     }
     return project;
 }
+
+// --- Custom domain (project admins) ---
+// A domain serves the docs only after its DNS TXT record proves ownership.
+const domainAdmin = { needsEncryption: false, what: "the custom domain" };
+async function domainRoute(res, work) {
+    try {
+        res.json(await work());
+    } catch (error) {
+        if (error instanceof customDomains.DomainError) return res.status(error.status).json({ error: error.message });
+        throw error;
+    }
+}
+
+app.get('/api/projects/:id/domain', requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, async () => customDomains.status(await customDomains.getProject(project.id)));
+});
+
+app.put('/api/projects/:id/domain', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.setDomain(project.id, req.body?.domain, { appHostnames: config.appHostnames }));
+});
+
+app.delete('/api/projects/:id/domain', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.removeDomain(project.id));
+});
+
+const verifyLimit = createRateLimiter({ windowMs: 60 * 1000, max: 10, key: (req) => req.user?.id || req.ip });
+app.post('/api/projects/:id/domain/verify', csrfProtection, requireAuth, verifyLimit, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.verifyDomain(project.id));
+});
 
 app.get('/api/projects/:id/webhook', requireAuth, async (req, res) => {
     const project = await loadProjectForAdmin(req, res);
@@ -880,32 +926,38 @@ app.post("/api/proxy", proxyLimit, async (req, res) => {
     }
 });
 
+// Which site a custom domain shows (used by the docs app on that domain). Verified only.
 app.get("/api/domain/:customDomain", async (req, res) => {
-    const { customDomain } = req.params;
+    const site = await customDomains.findVerifiedDomain(String(req.params.customDomain).toLowerCase());
+    if (!site) return res.status(404).json({ error: "Domain not linked to any project." });
+    res.json({ tenant: site.tenant, version: site.project });
+});
 
-    try {
-        const { data, error } = await supabase
-            .from('projects')
-            .select('tenant_name, project_name')
-            .eq('custom_domain', customDomain)
-            .single();
-
-        if (error || !data) {
-            console.log(`[Domain Routing] Unrecognized domain pinged: ${customDomain}`);
-            return res.status(404).json({ error: "Domain not linked to any project." });
-        }
-
-        console.log(`[Domain Routing] Matched ${customDomain} -> ${data.tenant_name}/${data.project_name}`);
-        
-        res.json({
-            tenant: data.tenant_name,
-            version: data.project_name
-        });
-
-    } catch (error) {
-        console.error("[Domain Routing] Server Error:", error);
-        res.status(500).json({ error: "Failed to verify domain." });
+// --- Reader feedback: "Was this page helpful?" ---
+const feedbackLimitPerVisitor = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20, key: (req) => req.ip });
+const feedbackLimitPerSite = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 500, key: (req) => `${req.body?.tenant}/${req.body?.version}` });
+app.post("/api/feedback", feedbackLimitPerVisitor, feedbackLimitPerSite, async (req, res) => {
+    const tenant = readName(req.body?.tenant);
+    const version = readName(req.body?.version);
+    const route = typeof req.body?.route === 'string' ? req.body.route.trim().replace(/^\/+|\/+$/g, '') : '';
+    const helpful = req.body?.helpful;
+    const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim().slice(0, 1000) : '';
+    if (!tenant || !version || !route || typeof helpful !== 'boolean') {
+        return res.status(400).json({ error: "Missing tenant, version, route or helpful." });
     }
+    // Only pages that are actually published.
+    const loaded = loadSite(tenant, version);
+    if (!loaded?.site.pages[route]) return res.status(404).json({ error: "This page doesn't exist." });
+
+    const { data: project } = await supabase.from('projects').select('id').eq('tenant_name', tenant).eq('project_name', version).maybeSingle();
+    if (!project) return res.status(404).json({ error: "These docs don't exist." });
+
+    const { error } = await supabase.from('page_feedback').insert({ project_id: project.id, route, helpful, comment: comment || null });
+    if (error) {
+        console.error("[Feedback] Couldn't save:", error.message);
+        return res.status(500).json({ error: "Couldn't save your feedback." });
+    }
+    res.status(201).json({ ok: true });
 });
 
 // --- ASK AI: answers readers' questions from the docs ---
@@ -984,6 +1036,17 @@ app.post("/api/ask", askLimitPerVisitor, askLimitPerSite, async (req, res) => {
         res.status(500).json({ error: "Internal server error." });
     }
 });
+
+// --- The app itself (SERVE_FRONTEND=true): static files, then index.html for app routes ---
+if (config.frontend.serve) {
+    app.use(express.static(config.frontend.distDir, { index: false, maxAge: "1h" }));
+    const appCsp = pageCsp(config);
+    app.get("/*splat", (req, res, next) => {
+        if (req.path.startsWith("/api/")) return next();
+        res.set("Content-Security-Policy", appCsp);
+        res.sendFile(path.join(config.frontend.distDir, "index.html"), (err) => err && next());
+    });
+}
 
 // --- GLOBAL ERROR HANDLER ---
 // Answers in JSON and never sends stack traces or internal messages to the client.

@@ -30,11 +30,11 @@ function safeProps(props = {}) {
 
 // Builds React elements from a compiled page (see backend/mdx/safeMdx.js). The tree is
 // plain data: no code from the page ever runs here, and only known components render.
-function renderNode(node, key, linkBase) {
+function renderNode(node, key, linkBase, sitePrefix) {
   if (!node) return null;
   if (node.t === "text") return node.v;
 
-  const children = (node.c || []).map((child, index) => renderNode(child, index, linkBase));
+  const children = (node.c || []).map((child, index) => renderNode(child, index, linkBase, sitePrefix));
   if (node.t === "root") return createElement(Fragment, null, ...children);
 
   const type = docComponents[node.n] || (node.t === "el" && HTML_ELEMENTS.has(node.n) ? node.n : null);
@@ -43,7 +43,7 @@ function renderNode(node, key, linkBase) {
 
   const props = { ...safeProps(node.p), key };
   // Links to other pages are written as "/slug"; point them at this docs site.
-  if (linkBase && typeof props.href === "string") props.href = resolveDocHref(props.href, linkBase);
+  if (linkBase !== undefined && typeof props.href === "string") props.href = resolveDocHref(props.href, linkBase, sitePrefix);
   if (node.t === "el" && VOID_ELEMENTS.has(node.n)) return createElement(type, props);
   // Spread so a single text child arrives as a string (CodeBlock relies on that).
   return createElement(type, props, ...children);
@@ -52,8 +52,9 @@ function renderNode(node, key, linkBase) {
 /**
  * @param {object} props
  * @param {object} props.tree - Compiled page
- * @param {string} [props.linkBase] - /docs/<tenant>/<project>, to resolve links between pages
+ * @param {string} [props.linkBase] - /docs/<tenant>/<project> ("" on a custom domain), to resolve links between pages
+ * @param {string} [props.sitePrefix] - /docs/<tenant>/<project>
  */
-export default function SafeMdxRenderer({ tree, linkBase }) {
-  return renderNode(tree, undefined, linkBase);
+export default function SafeMdxRenderer({ tree, linkBase, sitePrefix }) {
+  return renderNode(tree, undefined, linkBase, sitePrefix);
 }

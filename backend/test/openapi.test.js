@@ -56,9 +56,9 @@ test("builds an overview and one page per operation, grouped by tag", () => {
     assert.deepEqual(summary, { specPath: "openapi.yaml", operations: 4, tags: ["Pets", "Store"], truncated: false });
     assert.deepEqual(pages.map((p) => p.slug), ["api-reference", "api-reference/list-pets", "api-reference/create-pet", "api-reference/delete-pets-pet-id", "api-reference/get-inventory"]);
     assert.deepEqual(navigation, [
-        { group: "API reference", pages: ["api-reference"] },
-        { group: "Pets", pages: ["api-reference/list-pets", "api-reference/create-pet", "api-reference/delete-pets-pet-id"] },
-        { group: "Store", pages: ["api-reference/get-inventory"] },
+        { group: "API reference", tab: "API reference", pages: ["api-reference"] },
+        { group: "Pets", tab: "API reference", pages: ["api-reference/list-pets", "api-reference/create-pet", "api-reference/delete-pets-pet-id"] },
+        { group: "Store", tab: "API reference", pages: ["api-reference/get-inventory"] },
     ]);
 });
 

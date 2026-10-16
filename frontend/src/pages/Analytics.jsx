@@ -9,6 +9,8 @@ export default function Analytics() {
   const [isLoading, setIsLoading] = useState(true);
   const [views, setViews] = useState(0);
   const [visitors, setVisitors] = useState(0);
+  // Reader feedback ("Was this page helpful?"), newest first.
+  const [feedback, setFeedback] = useState([]);
 
   useEffect(() => {
     async function loadAnalytics() {
@@ -37,6 +39,14 @@ export default function Analytics() {
         setVisitors(uniqueIds.size);
       }
       
+      const { data: feedbackData } = await supabase
+        .from('page_feedback')
+        .select('route, helpful, comment, created_at')
+        .eq('project_id', id)
+        .order('created_at', { ascending: false })
+        .limit(500);
+      setFeedback(feedbackData || []);
+
       setIsLoading(false);
     }
     
@@ -81,7 +91,7 @@ export default function Analytics() {
             { title: "Views", value: isLoading ? "..." : views },
             { title: "Assistant", value: isLoading ? "..." : "0" },
             { title: "Searches", value: isLoading ? "..." : "0" },
-            { title: "Feedback", value: isLoading ? "..." : "0" }
+            { title: "Feedback", value: isLoading ? "..." : feedback.length }
           ].map((stat, idx) => (
             <div key={idx} style={{ backgroundColor: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "20px" }}>
               <div style={{ fontSize: "13px", color: "#64748b", fontWeight: "500", marginBottom: "12px" }}>{stat.title}</div>
@@ -91,7 +101,10 @@ export default function Analytics() {
           ))}
         </div>
 
-        {/* 3. Fake Traffic Chart Area */}
+        {/* 3. Reader feedback by page */}
+        <FeedbackSection feedback={feedback} isLoading={isLoading} />
+
+        {/* 4. Fake Traffic Chart Area */}
         <div style={{ backgroundColor: "#ffffff", padding: "32px", borderRadius: "12px", border: "1px solid #e2e8f0" }}>
           <h4 style={{ fontSize: "15px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0" }}>Visitors Over Time</h4>
           <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 24px 0" }}>Daily visitors count for the selected date range</p>
@@ -102,6 +115,56 @@ export default function Analytics() {
         </div>
 
       </div>
+    </div>
+  );
+}
+
+function FeedbackSection({ feedback, isLoading }) {
+  const byPage = new Map();
+  for (const item of feedback) {
+    const row = byPage.get(item.route) || { route: item.route, yes: 0, no: 0 };
+    if (item.helpful) row.yes += 1; else row.no += 1;
+    byPage.set(item.route, row);
+  }
+  const rows = [...byPage.values()].sort((a, b) => (b.yes + b.no) - (a.yes + a.no));
+  const comments = feedback.filter((item) => item.comment).slice(0, 20);
+  const cell = { padding: "10px 12px", borderBottom: "1px solid #f1f5f9", fontSize: "13px", color: "#334155", textAlign: "left" };
+
+  return (
+    <div data-testid="feedback-section" style={{ backgroundColor: "#ffffff", padding: "24px", borderRadius: "12px", border: "1px solid #e2e8f0", marginBottom: "24px" }}>
+      <h4 style={{ fontSize: "15px", fontWeight: "700", color: "#0f172a", margin: "0 0 4px 0" }}>Reader feedback</h4>
+      <p style={{ fontSize: "13px", color: "#64748b", margin: "0 0 16px 0" }}>Answers to "Was this page helpful?" on your docs.</p>
+      {isLoading ? <p style={{ fontSize: "13px", color: "#64748b" }}>Loading…</p> : rows.length === 0 ? (
+        <p style={{ fontSize: "13px", color: "#64748b", margin: 0 }}>No feedback yet. Readers see the question at the bottom of every page.</p>
+      ) : (
+        <>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: comments.length ? "20px" : 0 }}>
+            <thead><tr>{["Page", "Helpful", "Not helpful", "Score"].map((h) => <th key={h} style={{ ...cell, fontWeight: 600, color: "#64748b" }}>{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.route}>
+                  <td style={cell}><code>{row.route}</code></td>
+                  <td style={cell}>{row.yes}</td>
+                  <td style={cell}>{row.no}</td>
+                  <td style={cell}>{Math.round((row.yes / (row.yes + row.no)) * 100)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {comments.length > 0 && (
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 600, color: "#0f172a", marginBottom: "8px" }}>Recent comments</div>
+              {comments.map((item, i) => (
+                <div key={i} style={{ padding: "10px 0", borderTop: "1px solid #f1f5f9", fontSize: "13px", color: "#334155" }}>
+                  <span style={{ marginRight: "8px" }}>{item.helpful ? "👍" : "👎"}</span>
+                  {item.comment}
+                  <span style={{ color: "#94a3b8", marginLeft: "8px" }}>on <code>{item.route}</code></span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

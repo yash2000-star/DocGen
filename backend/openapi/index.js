@@ -488,8 +488,9 @@ function buildApiReference(spec, { specPath = "openapi.yaml" } = {}) {
     if (truncated) overview.push(`<Note>The spec has ${operations.length} endpoints; the first ${MAX_OPERATIONS} are documented.</Note>`, "");
     pages.unshift({ slug: BASE, title: "API reference", mdx: overview.join("\n") });
 
-    const navigation = [{ group: "API reference", pages: [BASE] }];
-    for (const [tag, ops] of byTag) if (ops.length) navigation.push({ group: tag, pages: ops.map((op) => op.slug) });
+    // The reference gets its own tab in the docs header.
+    const navigation = [{ group: "API reference", tab: "API reference", pages: [BASE] }];
+    for (const [tag, ops] of byTag) if (ops.length) navigation.push({ group: tag, tab: "API reference", pages: ops.map((op) => op.slug) });
 
     return { pages, navigation, summary: { specPath, operations: included.length, tags: [...byTag.keys()].filter((t) => byTag.get(t).length), truncated } };
 }

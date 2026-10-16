@@ -81,11 +81,11 @@ function App() {
   useEffect(() => {
     const hostname = window.location.hostname;
     
-    const isMainApp = 
-      hostname === 'localhost' || 
-      hostname === '127.0.0.1' || 
-      hostname.includes('prismify.yashwant.xyz') || 
-      hostname.includes('docgen.app');
+    // Any other hostname is a docs site's custom domain. Set VITE_APP_HOSTNAMES
+    // (comma-separated) to the hostnames the dashboard itself runs on.
+    const appHostnames = (import.meta.env.VITE_APP_HOSTNAMES || "localhost,127.0.0.1,prismify.yashwant.xyz,docgen.app")
+      .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+    const isMainApp = appHostnames.some((h) => hostname === h || hostname.endsWith(`.${h}`));
 
     if (isMainApp) {
       setIsLoadingDomain(false);
