@@ -183,7 +183,10 @@ function objectShape(schema, resolve) {
 function describeSchema(schema, resolve) {
     const s = resolve(schema);
     const parts = [];
-    if (s.description) parts.push(mdxText(s.description));
+    if (s.description) {
+        const text = mdxText(s.description);
+        parts.push(/[.!?:)]$/.test(text) ? text : `${text}.`);
+    }
     if (Array.isArray(s.enum) && s.enum.length) parts.push(`One of: ${s.enum.slice(0, 20).map((v) => `\`${String(v).replace(/`/g, "")}\``).join(", ")}.`);
     if (s.default !== undefined) parts.push(`Defaults to \`${JSON.stringify(s.default).replace(/`/g, "")}\`.`);
     if (s.deprecated) parts.push("Deprecated.");

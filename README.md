@@ -15,10 +15,12 @@ supabase/   Database schema and Row-Level Security policies
 ```
 
 1. You connect your AI provider and import `https://github.com/<owner>/<repo>` from the dashboard. The request is queued as a job and answered at once; a worker picks it up and the page shows its real progress (cloning, planning, writing page 2 of 7, building). You can leave the page or cancel the run.
-2. The worker clones it and, with your AI key, plans 5–10 pages and writes them to `docs/<owner>/<repo>/`. Large repos are summarized to fit the model: the most important files go in full, the rest are listed by name.
-3. Every generated page must compile; one that doesn't goes back to your critic model with the error to fix. `build/build.js` then compiles each page on the server into a code-free tree (no `import`/`export`, `{expressions}` or event handlers; only known components and safe links) and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
-4. The docs are published at `/docs/<owner>/<repo>`. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
-5. Each run is listed in the project's activity feed with its progress, the model used and the tokens it cost.
+2. The worker clones it and, with your AI key, plans 5–10 pages and writes them to `docs/<owner>/<repo>/`. Large repos are summarized to fit the model: the most important files go in full, the rest are listed by name. The writer is told to describe only what the source shows, and the critic checks each draft against the same source.
+3. **Fact check:** each page is checked against the repository, without AI, for invented file names, environment variables, npm scripts, packages and links to pages that don't exist. A page with problems goes back to your critic model once, with the exact list. Links that still point nowhere become plain text, and anything else left is listed on the run.
+4. **API reference:** if the repo has an OpenAPI 3.x or Swagger 2.0 spec (`openapi.yaml`, `swagger.json`, or any YAML/JSON file starting with `openapi:`), DocGen builds an API reference from it, without AI. It has an overview plus one page per endpoint with parameters, request body, responses, cURL/JavaScript/Python samples and a "Try it" playground, grouped by tag in the sidebar. A push that changes the spec refreshes it.
+5. Every generated page must compile; one that doesn't goes back to your critic model with the error to fix. `build/build.js` then compiles each page on the server into a code-free tree (no `import`/`export`, `{expressions}` or event handlers; only known components and safe links) and indexes each section for search and Ask AI (Postgres full-text search, so it works with every provider).
+6. The docs are published at `/docs/<owner>/<repo>`. The viewer only draws the compiled tree, so nothing written into a page, by the AI or by a repo's README, can run in readers' browsers. Readers' Ask AI questions are answered by the project owner's AI, using their critic model.
+7. Each run is listed in the project's activity feed with its progress, the model used, the tokens it cost, the fact-check result and the API reference it built.
 
 ### Background jobs
 
@@ -118,7 +120,8 @@ What protects DocGen users, and where it lives:
 
 - **Who owns a docs site:** `/docs/<owner>/<repo>` can only be created or claimed by the GitHub user `<owner>`, from that repository. The database enforces this (`supabase/migrations/20261019000000_security_hardening.sql`), so it holds even for direct API calls. Sign-in with GitHub is needed to import repositories. Organization repositories aren't supported yet; they need a GitHub App to verify membership.
 - **AI keys:** encrypted with AES-256-GCM (`AI_KEY_ENCRYPTION_KEY`) and never sent back to the browser. Custom AI endpoints can't point at localhost or private networks in production. The address is checked again when connecting, so DNS rebinding can't get around it.
-- **Generated pages:** compiled on the server into a tree with no code. Nothing in a page can run in readers' browsers (see step 4 in [How it works](#how-it-works)).
+- **Generated pages:** compiled on the server into a tree with no code. Nothing in a page can run in readers' browsers (see steps 5 and 6 in [How it works](#how-it-works)).
+- **Repository contents:** symlinks in a repository are never followed, so a repo can't pull the server's own files (like `backend/.env`) into the AI prompt or the docs. Specs are parsed as plain data (YAML JSON schema).
 - **API playground ("Try it"):** the backend proxy only calls public internet addresses, follows no redirects, sends no cookies or credentials, and limits time (10 s), response size (1 MB) and rate.
 - **Webhooks:** each project has its own secret, stored encrypted. A push must be signed with the secret of the project it's for.
 - **Cross-site requests:** the dashboard API authenticates with a Bearer token, and state-changing requests from other origins are refused.
@@ -149,6 +152,8 @@ npm --prefix backend test
 | "You can only import repositories under your GitHub account" | Docs at `/docs/<owner>/<repo>` belong to the GitHub user `<owner>`. Sign in with that GitHub account. Organization repositories aren't supported yet. |
 | "Sign in with GitHub to import repositories" | You signed in with email. Sign in with GitHub instead. |
 | The API playground says it "can only call public APIs" | It can't reach localhost or private networks in production. For local testing, set `API_PLAYGROUND_ALLOW_PRIVATE=true`. |
+| No API reference was generated | The spec must be OpenAPI 3.x or Swagger 2.0, at most 2 MB, outside test/example folders, and named like `openapi.yaml`/`swagger.json` or start with `openapi:`. The run's activity row says which spec was used. |
+| The activity feed lists fact-check items left | The page still mentions things the repository doesn't have. Fix them in the editor, or regenerate. |
 | `relation "public.projects" does not exist` | The database schema hasn't been applied. See step 1. |
 | "Saving AI keys isn't enabled on this server" | Set `AI_KEY_ENCRYPTION_KEY` in `backend/.env` and restart the backend. |
 | "This saved key can't be decrypted" | `AI_KEY_ENCRYPTION_KEY` changed since the key was saved. Enter the key again in **Settings → AI providers**. |
@@ -174,6 +179,8 @@ npm --prefix backend test
 | `backend/config.js` | All environment configuration |
 | `backend/lib/safeFetch.js` | `fetch` that only connects to public addresses (custom AI endpoints, API playground) |
 | `backend/services/webhookSecrets.js` | Per-project GitHub webhook secrets |
+| `backend/quality/factCheck.js` | Checks generated pages against the repository |
+| `backend/openapi/` | Builds the API reference from an OpenAPI/Swagger spec |
 | `build/build.js` | Static build, search index and Ask AI section index |
 | `frontend/src/pages/DocEngine.jsx` | Public docs viewer |
 | `supabase/migrations/` | Database schema, RLS policies, SQL functions |
