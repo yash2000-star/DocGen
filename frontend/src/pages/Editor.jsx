@@ -1,307 +1,487 @@
-import { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/auth";
-import { apiFetch } from '../lib/api';
-import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { apiFetch } from "../lib/api";
+import { lineDiff, diffStats } from "../lib/lineDiff";
+import SafeMdxRenderer from "../components/mdx/SafeMdxRenderer";
 
-function EditorHeader({ onPublish, disabled, viewMode, setViewMode }) {
+// The docs editor: the site's real pages (the files the published site is built from),
+// with a live preview drawn by the same renderer readers see, history with restore, and
+// review of AI updates for pages edited by hand.
+
+const colors = { border: "#e2e8f0", muted: "#64748b", text: "#0f172a", accent: "#059669", danger: "#b91c1c", warn: "#b45309" };
+const button = (kind = "secondary") => ({
+  padding: "6px 12px", borderRadius: "6px", fontSize: "13px", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
+  border: kind === "primary" ? "none" : `1px solid ${colors.border}`,
+  backgroundColor: kind === "primary" ? colors.text : kind === "danger" ? "#fff" : "#fff",
+  color: kind === "primary" ? "#fff" : kind === "danger" ? colors.danger : colors.text,
+});
+
+const SOURCE_LABELS = {
+  generation: "Written by AI",
+  update: "AI update after a push",
+  editor: "Edited",
+  restore: "Restored",
+  baseline: "Earlier version",
+};
+
+const formatDate = (value) => new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+async function readJson(res) {
+  return res.json().catch(() => ({}));
+}
+
+function DiffView({ before, after, testId }) {
+  const diff = useMemo(() => lineDiff(before, after), [before, after]);
+  const { added, removed } = diffStats(diff);
+  if (!added && !removed) return <p style={{ fontSize: "13px", color: colors.muted }}>No differences.</p>;
   return (
-    <div style={{ 
-      display: "flex", alignItems: "center", justifyContent: "space-between", 
-      height: "65px", padding: "0 24px", backgroundColor: "#ffffff", borderBottom: "1px solid #e2e8f0",
-      flexShrink: 0
-    }}>
-      {/* Left side: Icons */}
-      <div style={{ display: "flex", gap: "20px", color: "#64748b" }}>
-        <button onClick={() => setViewMode('preview')} style={{ background: "none", border: "none", cursor: "pointer", color: viewMode === 'preview' ? "#059669" : "inherit", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        </button>
-        <button onClick={() => setViewMode('write')} style={{ background: "none", border: "none", cursor: "pointer", color: viewMode === 'write' ? "#059669" : "inherit", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
-        </button>
-        <button style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-        </button>
+    <div data-testid={testId}>
+      <div style={{ fontSize: "12px", color: colors.muted, marginBottom: "6px" }}>
+        <span style={{ color: colors.accent }}>+{added}</span> <span style={{ color: colors.danger }}>−{removed}</span> lines
       </div>
-
-      {/* Middle: Git branch */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: "500", color: "#334155", padding: "4px 10px", backgroundColor: "#f1f5f9", borderRadius: "6px", border: "1px solid #e2e8f0", cursor: "pointer" }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3v12"></path><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
-        main
-      </div>
-
-      {/* Right side */}
-      <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-        <button style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-        </button>
-        <button style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-        </button>
-        <button style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-        </button>
-        <button 
-          onClick={onPublish} 
-          disabled={disabled}
-          style={{ 
-            padding: "6px 14px", backgroundColor: "#0f172a", color: "#ffffff", 
-            border: "none", borderRadius: "6px", fontWeight: "500", fontSize: "13px", cursor: disabled ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", opacity: disabled ? 0.7 : 1
-          }}
-        >
-          {disabled ? "Publishing..." : "Publish"}
-        </button>
-      </div>
+      <pre style={{ margin: 0, fontSize: "12px", lineHeight: 1.6, fontFamily: "ui-monospace, Menlo, monospace", border: `1px solid ${colors.border}`, borderRadius: "8px", overflow: "auto", maxHeight: "55vh", backgroundColor: "#fff" }}>
+        {diff.map((line, i) => (
+          <div key={i} className={`diff-${line.type}`} style={{ padding: "0 10px", whiteSpace: "pre-wrap", wordBreak: "break-word", backgroundColor: line.type === "add" ? "#ecfdf5" : line.type === "del" ? "#fef2f2" : "transparent", color: line.type === "del" ? "#991b1b" : line.type === "add" ? "#065f46" : "#334155" }}>
+            {line.type === "add" ? "+ " : line.type === "del" ? "− " : "  "}{line.text}
+          </div>
+        ))}
+      </pre>
     </div>
+  );
+}
+
+function SidePanel({ title, onClose, children, testId }) {
+  return (
+    <aside data-testid={testId} style={{ width: "min(560px, 45vw)", borderLeft: `1px solid ${colors.border}`, backgroundColor: "#f8fafc", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderBottom: `1px solid ${colors.border}`, backgroundColor: "#fff" }}>
+        <strong style={{ fontSize: "14px", color: colors.text }}>{title}</strong>
+        <button type="button" onClick={onClose} aria-label="Close" style={{ ...button(), padding: "2px 8px" }}>✕</button>
+      </div>
+      <div style={{ padding: "16px", overflowY: "auto", flex: 1 }}>{children}</div>
+    </aside>
+  );
+}
+
+function PageTree({ site, route, onSelect, onCreate, canEdit }) {
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const [group, setGroup] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const groups = [...new Set(site.navigation.map((g) => g.group))];
+  const hasTabs = site.navigation.some((g) => g.tab);
+  const tabName = (g) => g.tab || "Documentation";
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const message = await onCreate(title, group || groups[0] || "Guides");
+    setBusy(false);
+    if (message) return setError(message);
+    setAdding(false);
+    setTitle("");
+  };
+
+  return (
+    <nav data-testid="editor-pages" style={{ width: "250px", borderRight: `1px solid ${colors.border}`, backgroundColor: "#fff", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${colors.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ fontSize: "13px", color: colors.text }}>Pages</strong>
+        <Link to="../navigation" relative="path" style={{ fontSize: "12px", color: colors.muted }}>Edit navigation</Link>
+      </div>
+      <div style={{ padding: "8px", overflowY: "auto", flex: 1 }}>
+        {site.navigation.length === 0 && <p style={{ fontSize: "13px", color: colors.muted, padding: "8px" }}>No pages yet. Generate docs from the dashboard, or add a page.</p>}
+        {site.navigation.map((g, gi) => {
+          const showTab = hasTabs && (gi === 0 || tabName(site.navigation[gi - 1]) !== tabName(g));
+          return (
+            <div key={`${g.tab}-${g.group}`} style={{ marginBottom: "10px" }}>
+              {showTab && <div style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#94a3b8", padding: "8px 8px 2px" }}>{tabName(g)}</div>}
+              <div style={{ fontSize: "12px", fontWeight: 600, color: "#334155", padding: "4px 8px" }}>{g.group}</div>
+              {g.pages.map((r) => {
+                const active = r === route;
+                return (
+                  <button key={r} type="button" data-route={r} onClick={() => onSelect(r)} style={{ display: "flex", alignItems: "center", gap: "6px", width: "100%", textAlign: "left", border: "none", borderRadius: "6px", padding: "5px 8px 5px 16px", fontSize: "13px", cursor: "pointer", backgroundColor: active ? "#ecfdf5" : "transparent", color: active ? colors.accent : "#475569", fontWeight: active ? 600 : 400 }}>
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{site.pages[r]?.title || r}</span>
+                    {site.suggestions.includes(r) && <span title="An AI update is waiting for review" data-testid="suggestion-dot" style={{ fontSize: "10px", fontWeight: 700, color: "#7c3aed" }}>AI</span>}
+                    {site.handEdited.includes(r) && <span title="Edited by hand: AI updates come as suggestions" style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "#f59e0b", flexShrink: 0 }} />}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+      {canEdit && (
+        <div style={{ borderTop: `1px solid ${colors.border}`, padding: "12px" }}>
+          {adding ? (
+            <form onSubmit={submit} style={{ display: "grid", gap: "8px" }}>
+              <input autoFocus data-testid="new-page-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Page title" maxLength={120} style={{ padding: "7px 9px", border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "13px" }} />
+              <input data-testid="new-page-group" list="editor-groups" value={group} onChange={(e) => setGroup(e.target.value)} placeholder={groups[0] ? `Group (${groups[0]})` : "Group"} maxLength={80} style={{ padding: "7px 9px", border: `1px solid ${colors.border}`, borderRadius: "6px", fontSize: "13px" }} />
+              <datalist id="editor-groups">{groups.map((g) => <option key={g} value={g} />)}</datalist>
+              {error && <p role="alert" style={{ margin: 0, fontSize: "12px", color: colors.danger }}>{error}</p>}
+              <div style={{ display: "flex", gap: "6px" }}>
+                <button type="submit" disabled={busy || !title.trim()} style={button("primary")}>{busy ? "Adding…" : "Add page"}</button>
+                <button type="button" onClick={() => setAdding(false)} style={button()}>Cancel</button>
+              </div>
+            </form>
+          ) : (
+            <button type="button" data-testid="new-page" onClick={() => setAdding(true)} style={{ ...button(), width: "100%" }}>+ New page</button>
+          )}
+        </div>
+      )}
+    </nav>
   );
 }
 
 export default function Editor() {
   const { id } = useParams();
-  const [project, setProject] = useState(null);
-  
-  // The Brain's State
-  const [pages, setPages] = useState([]);
-  const [activePage, setActivePage] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [viewMode, setViewMode] = useState('write');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const route = searchParams.get("page");
 
-  // 1. Fetch Project and Pages
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      // Fetch Project
-      const { data: projData } = await supabase.from('projects').select('*').eq('id', id).single();
-      setProject(projData);
+  const [site, setSite] = useState(null);
+  const [siteError, setSiteError] = useState(null);
+  const [page, setPage] = useState(null); // the published version: { route, content, etag, suggestion, ... }
+  const [draft, setDraft] = useState("");
+  const [status, setStatus] = useState(null); // { kind: "ok" | "error" | "busy", text }
+  const [preview, setPreview] = useState(null);
+  const [view, setView] = useState("split");
+  const [panel, setPanel] = useState(null); // "history" | "suggestion" | "conflict"
+  const [conflict, setConflict] = useState(null);
+  const [history, setHistory] = useState(null);
+  const [selectedRevision, setSelectedRevision] = useState(null);
+  const [suggestion, setSuggestion] = useState(null);
+  const textareaRef = useRef(null);
 
-      // Fetch Pages
-      const { data: pagesData, error } = await supabase
-        .from('pages')
-        .select('*')
-        .eq('project_id', id)
-        .order('order_index', { ascending: true });
+  const dirty = page !== null && draft !== page.content;
+  // With a side panel open there's no room for two columns: show the source only.
+  const shownView = panel && view === "split" ? "write" : view;
+  const canEdit = Boolean(site?.canEdit);
+  const busy = status?.kind === "busy";
 
-      if (pagesData) {
-        setPages(pagesData);
-        if (pagesData.length > 0) setActivePage(pagesData[0]);
-      }
-      setIsLoading(false);
-    }
-    loadData();
+  const loadSite = useCallback(async () => {
+    const res = await apiFetch(`/api/projects/${id}/pages`).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (!res?.ok) return setSiteError(data.error || "Couldn't load the pages.");
+    setSite(data);
+    return data;
   }, [id]);
 
-  // 2. Handle Text Change
-  function handleContentChange(e) {
-    const newContent = e.target.value;
-    // Update active page immediately for typing
-    setActivePage({ ...activePage, content: newContent });
-    // Update the pages array so we don't lose progress if clicking another tab
-    setPages(pages.map(p => p.id === activePage.id ? { ...p, content: newContent } : p));
-  }
+  useEffect(() => {
+    loadSite().then((data) => {
+      if (data && !route) {
+        const first = data.navigation[0]?.pages[0];
+        if (first) setSearchParams({ page: first }, { replace: true });
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per project
+  }, [loadSite]);
 
-  // 3. Create a New File
-  async function createNewPage() {
-    const title = prompt("Enter a title for your new page (e.g., Quickstart):");
-    if (!title) return;
-
-    // Convert "My File" to "my-file.mdx"
-    const filePath = title.toLowerCase().replace(/\s+/g, '-') + '.mdx';
-
-    const { data, error } = await supabase
-      .from('pages')
-      .insert({
-        project_id: id,
-        title: title,
-        file_path: filePath,
-        content: `# ${title}\n\nStart writing your markdown here...`,
-        order_index: pages.length
+  // Load the selected page.
+  useEffect(() => {
+    if (!route) return;
+    let cancelled = false;
+    apiFetch(`/api/projects/${id}/page?route=${encodeURIComponent(route)}`)
+      .then(async (res) => {
+        const data = await readJson(res);
+        if (cancelled) return;
+        if (!res.ok) {
+          setPage(null);
+          setStatus({ kind: "error", text: data.error || "Couldn't load this page." });
+          return;
+        }
+        setPage(data);
+        setDraft(data.content);
+        setStatus(null);
+        setPanel(null);
+        setConflict(null);
       })
-      .select()
-      .single();
+      .catch(() => !cancelled && setStatus({ kind: "error", text: "Couldn't reach the server." }));
+    return () => { cancelled = true; };
+  }, [id, route]);
 
-    if (error) {
-      alert("Error creating page");
-      console.error(error);
-    } else {
-      setPages([...pages, data]);
-      setActivePage(data);
+  // Live preview, compiled by the server with the same rules as the published site.
+  useEffect(() => {
+    if (page === null) return;
+    const timer = setTimeout(async () => {
+      const res = await apiFetch(`/api/projects/${id}/preview`, { method: "POST", body: JSON.stringify({ content: draft }) }).catch(() => null);
+      if (res?.ok) setPreview(await readJson(res));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [id, draft, page]);
+
+  // Leaving with unpublished changes asks first.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const selectPage = (next) => {
+    if (next === route) return;
+    if (dirty && !window.confirm("You have unpublished changes on this page. Discard them?")) return;
+    setPreview(null);
+    setSearchParams({ page: next });
+  };
+
+  // Applies a saved version returned by the server.
+  const applySaved = (data, content, text) => {
+    setPage((p) => ({ ...p, content, etag: data.etag, handEdited: true, suggestion: null }));
+    setSite((s) => ({ ...s, handEdited: [...new Set([...s.handEdited, page.route])], suggestions: s.suggestions.filter((r) => r !== page.route) }));
+    setDraft(content);
+    setStatus(data.published === false ? { kind: "error", text: data.buildError } : { kind: "ok", text });
+    loadSite();
+  };
+
+  const publish = async ({ overrideEtag } = {}) => {
+    if (!page || !canEdit || busy) return;
+    setStatus({ kind: "busy", text: "Publishing…" });
+    const content = draft;
+    const res = await apiFetch(`/api/projects/${id}/page?route=${encodeURIComponent(page.route)}`, {
+      method: "PUT", body: JSON.stringify({ content, baseEtag: overrideEtag || page.etag }),
+    }).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (res?.status === 409) {
+      setConflict(data.current);
+      setPanel("conflict");
+      return setStatus({ kind: "error", text: data.error });
     }
-  }
+    if (!res?.ok) return setStatus({ kind: "error", text: data.error || "Couldn't publish this page." });
+    setConflict(null);
+    if (panel === "conflict") setPanel(null);
+    applySaved(data, content, "Published");
+  };
 
-  // 4. Save to DB and Publish to Next.js Engine
-  async function publishDoc() {
-    if (!activePage) return;
-    setSaving(true);
-    
-    try {
-      // Step A: Save to Supabase 'pages' table first
-      await supabase
-        .from('pages')
-        .update({ content: activePage.content })
-        .eq('id', activePage.id);
+  // Ctrl/Cmd+S publishes.
+  const publishRef = useRef(publish);
+  useEffect(() => { publishRef.current = publish; });
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        publishRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-      // Step B: Send to your static generator backend
-      const res = await apiFetch(`/api/docs`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-              tenant: project.tenant_name,
-              version: project.project_name,
-              fileName: activePage.file_path.replace('.mdx', ''),
-              content: activePage.content
-          })
-      });
-      const data = await res.json().catch(() => ({}));
-      // The server refuses pages with MDX syntax errors and says where the error is.
-      if (!res.ok) throw new Error(data.error || "Failed to publish document.");
-      alert("Saved & Published Successfully!");
-    } catch (err) {
-      console.error(err);
-      alert(err.message || "Failed to publish document.");
-    } finally {
-      setSaving(false);
-    }
-  }
+  const createPage = async (title, group) => {
+    const res = await apiFetch(`/api/projects/${id}/pages`, { method: "POST", body: JSON.stringify({ title, group }) }).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (!res?.ok) return data.error || "Couldn't add the page.";
+    await loadSite();
+    setSearchParams({ page: data.route });
+    return null;
+  };
 
-  if (!project) return <div style={{ padding: "40px", fontFamily: "system-ui" }}>Loading editor...</div>;
+  const deletePage = async () => {
+    if (!window.confirm(`Delete "${page.title}"? You can restore it from its history later.`)) return;
+    setStatus({ kind: "busy", text: "Deleting…" });
+    const res = await apiFetch(`/api/projects/${id}/page?route=${encodeURIComponent(page.route)}`, { method: "DELETE" }).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (!res?.ok) return setStatus({ kind: "error", text: data.error || "Couldn't delete the page." });
+    const next = await loadSite();
+    setPage(null);
+    setStatus({ kind: "ok", text: `Deleted ${page.title}` });
+    const first = next?.navigation[0]?.pages[0];
+    setSearchParams(first ? { page: first } : {});
+  };
+
+  const openHistory = async () => {
+    setPanel("history");
+    setHistory(null);
+    setSelectedRevision(null);
+    const res = await apiFetch(`/api/projects/${id}/history?route=${encodeURIComponent(page.route)}`).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    setHistory(res?.ok ? data.revisions : []);
+  };
+
+  const showRevision = async (revision) => {
+    const res = await apiFetch(`/api/projects/${id}/revisions/${revision.id}`).catch(() => null);
+    if (res?.ok) setSelectedRevision(await readJson(res));
+  };
+
+  const restore = async () => {
+    if (dirty && !window.confirm("Restoring replaces your unpublished changes. Continue?")) return;
+    setStatus({ kind: "busy", text: "Restoring…" });
+    const res = await apiFetch(`/api/projects/${id}/revisions/${selectedRevision.id}/restore`, { method: "POST", body: JSON.stringify({ baseEtag: page.etag }) }).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (!res?.ok) return setStatus({ kind: "error", text: data.error || "Couldn't restore that version." });
+    setPanel(null);
+    applySaved(data, data.content, "Restored and published");
+  };
+
+  const openSuggestion = async () => {
+    setPanel("suggestion");
+    setSuggestion(null);
+    const res = await apiFetch(`/api/projects/${id}/suggestion?route=${encodeURIComponent(page.route)}`).catch(() => null);
+    if (res?.ok) setSuggestion(await readJson(res));
+  };
+
+  const acceptSuggestion = async () => {
+    if (dirty && !window.confirm("Accepting replaces your unpublished changes. Continue?")) return;
+    setStatus({ kind: "busy", text: "Publishing the suggestion…" });
+    const res = await apiFetch(`/api/projects/${id}/suggestion/accept?route=${encodeURIComponent(page.route)}`, { method: "POST", body: JSON.stringify({ baseEtag: page.etag }) }).catch(() => null);
+    const data = res ? await readJson(res) : {};
+    if (!res?.ok) return setStatus({ kind: "error", text: data.error || "Couldn't accept the suggestion." });
+    setPanel(null);
+    applySaved(data, data.content, "Suggestion accepted and published");
+  };
+
+  const dismissSuggestion = async () => {
+    const res = await apiFetch(`/api/projects/${id}/suggestion/dismiss?route=${encodeURIComponent(page.route)}`, { method: "POST" }).catch(() => null);
+    if (!res?.ok) return setStatus({ kind: "error", text: "Couldn't dismiss the suggestion." });
+    setPanel(null);
+    setPage((p) => ({ ...p, suggestion: null }));
+    setStatus({ kind: "ok", text: "Suggestion dismissed" });
+    loadSite();
+  };
+
+  if (siteError) return <div style={{ padding: "40px", color: colors.danger }}>{siteError}</div>;
+  if (!site) return <div style={{ padding: "40px", fontFamily: "system-ui", color: colors.muted }}>Loading editor…</div>;
+
+  const docsBase = `/docs/${site.tenant}/${site.project}`;
+  const statusText = busy ? status.text : status?.kind === "error" ? status.text : dirty ? "Unpublished changes" : status?.text || (page ? "Published" : "");
 
   return (
-    <div style={{ position: "fixed", top: 0, left: "250px", right: 0, bottom: 0, backgroundColor: "#ffffff", zIndex: 100, display: "flex", flexDirection: "column", fontFamily: "Inter, system-ui, sans-serif" }}>
-      
-      <EditorHeader onPublish={publishDoc} disabled={saving} viewMode={viewMode} setViewMode={setViewMode} />
-
-      {/* 3-Column Flex Layout Environment */}
-      <div style={{ display: "flex", height: "calc(100vh - 65px)", overflow: "hidden" }}>
-        
-        {/* Middle Column (File Explorer) */}
-        <div style={{ width: "260px", borderRight: "1px solid #e2e8f0", backgroundColor: "#ffffff", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          
-          {/* Top Tabs */}
-          <div style={{ display: "flex", alignItems: "flex-end", borderBottom: "1px solid #e2e8f0", padding: "0 16px" }}>
-            <div style={{ padding: "12px 6px", fontSize: "13px", fontWeight: "600", color: "#0f172a", borderBottom: "2px solid #0f172a", cursor: "pointer", marginRight: "16px" }}>Navigation</div>
-            <div style={{ padding: "12px 6px", fontSize: "13px", fontWeight: "500", color: "#64748b", cursor: "pointer", marginRight: "16px", borderBottom: "2px solid transparent" }}>Files</div>
-            <div style={{ padding: "12px 6px", fontSize: "13px", fontWeight: "500", color: "#64748b", cursor: "pointer", borderBottom: "2px solid transparent" }}>Config</div>
-          </div>
-
-          {/* Dynamic File Tree */}
-          <div style={{ padding: "16px 12px", display: "flex", flexDirection: "column", gap: "2px", flex: 1, overflowY: "auto" }}>
-             
-             {/* Folder */}
-             <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: "600", color: "#334155", padding: "6px 8px" }}>
-               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ color: "#94a3b8" }}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-               Documents
-             </div>
-
-             {isLoading ? (
-               <div style={{ padding: "12px", fontSize: "13px", color: "#94a3b8" }}>Loading files...</div>
-             ) : pages.length === 0 ? (
-               <div style={{ padding: "12px", fontSize: "12px", color: "#94a3b8", fontStyle: "italic" }}>No pages yet.</div>
-             ) : (
-               pages.map((page) => (
-                 <div 
-                   key={page.id}
-                   onClick={() => setActivePage(page)}
-                   style={{ 
-                     display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", 
-                     fontWeight: activePage?.id === page.id ? "600" : "500", 
-                     color: activePage?.id === page.id ? "#059669" : "#64748b", 
-                     backgroundColor: activePage?.id === page.id ? "#ecfdf5" : "transparent", 
-                     padding: "6px 8px", cursor: "pointer", paddingLeft: "30px", borderRadius: "6px", marginTop: "2px" 
-                   }}
-                 >
-                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                   {page.title}
-                 </div>
-               ))
-             )}
-
-             {/* Add New Button */}
-             <div 
-               onClick={createNewPage}
-               style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", fontWeight: "500", color: "#64748b", padding: "8px", cursor: "pointer", marginTop: "12px", borderTop: "1px solid #e2e8f0" }}
-             >
-               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-               Add new
-             </div>
-
-          </div>
+    <div style={{ position: "fixed", top: 0, left: "250px", right: 0, bottom: 0, backgroundColor: "#fff", zIndex: 100, display: "flex", flexDirection: "column", fontFamily: "Inter, system-ui, sans-serif" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", height: "56px", padding: "0 16px", borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: "14px", fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{page?.title || "Editor"}</div>
+          {page && <div style={{ fontSize: "12px", color: colors.muted }}>{docsBase}/{page.route}</div>}
         </div>
+        <span data-testid="editor-status" role="status" style={{ fontSize: "12px", color: status?.kind === "error" ? colors.danger : dirty ? colors.warn : colors.muted, maxWidth: "40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={statusText}>{statusText}</span>
+        <div role="group" aria-label="View" style={{ display: "flex", border: `1px solid ${colors.border}`, borderRadius: "6px", overflow: "hidden" }}>
+          {["write", "split", "preview"].map((v) => (
+            <button key={v} type="button" onClick={() => setView(v)} aria-pressed={view === v} style={{ padding: "5px 10px", fontSize: "12px", border: "none", cursor: "pointer", backgroundColor: view === v ? "#f1f5f9" : "#fff", color: view === v ? colors.text : colors.muted, fontWeight: view === v ? 600 : 400, textTransform: "capitalize" }}>{v}</button>
+          ))}
+        </div>
+        {page && <button type="button" data-testid="open-history" onClick={openHistory} style={button()}>History</button>}
+        {page && <a href={`${docsBase}/${page.route}`} target="_blank" rel="noopener noreferrer" style={{ ...button(), textDecoration: "none" }}>View page</a>}
+        {page && canEdit && <button type="button" data-testid="delete-page" onClick={deletePage} disabled={busy} style={button("danger")}>Delete</button>}
+        {canEdit && (
+          <button type="button" data-testid="publish" onClick={() => publish()} disabled={!page || !dirty || busy} title="Publish (Ctrl+S)" style={{ ...button("primary"), opacity: !page || !dirty || busy ? 0.5 : 1 }}>
+            {busy ? "Publishing…" : "Publish"}
+          </button>
+        )}
+      </div>
 
-        {/* Main Canvas (Right Column) */}
-        <div style={{ flex: 1, backgroundColor: "#f8fafc", overflowY: "auto", position: "relative", padding: "32px" }}>
-          
-          <div style={{ 
-            maxWidth: "800px", margin: "0 auto", backgroundColor: "#ffffff", 
-            minHeight: "800px", padding: "48px", borderRadius: "12px", 
-            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025)",
-            border: "1px solid #e2e8f0"
-          }}>
-            {activePage ? (
-              <>
-                <h1 style={{ fontSize: "36px", fontWeight: "700", color: "#0f172a", marginTop: 0, marginBottom: "24px", letterSpacing: "-0.5px", outline: "none" }}>
-                  {activePage.title}
-                </h1>
-                
-                {viewMode === 'write' ? (
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        <PageTree site={site} route={route} onSelect={selectPage} onCreate={createPage} canEdit={canEdit} />
+
+        <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          {page?.suggestion && (
+            <div data-testid="suggestion-banner" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px", backgroundColor: "#f5f3ff", borderBottom: "1px solid #ddd6fe", fontSize: "13px", color: "#5b21b6" }}>
+              <span style={{ flex: 1 }}>
+                You edited this page, so DocGen didn't overwrite it. An AI update is waiting for review ({page.suggestion.message || SOURCE_LABELS[page.suggestion.source]}, {formatDate(page.suggestion.createdAt)}).
+              </span>
+              <button type="button" data-testid="review-suggestion" onClick={openSuggestion} style={button()}>Review</button>
+            </div>
+          )}
+          {!canEdit && <div style={{ padding: "8px 16px", fontSize: "13px", color: colors.muted, backgroundColor: "#f8fafc", borderBottom: `1px solid ${colors.border}` }}>You can view these pages. Ask a project admin for editor access to change them.</div>}
+
+          {!page ? (
+            <div style={{ padding: "48px", textAlign: "center", color: colors.muted, fontSize: "14px" }}>{route ? "Loading…" : "Select a page, or add one."}</div>
+          ) : (
+            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+              {shownView !== "preview" && (
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", borderRight: shownView === "split" ? `1px solid ${colors.border}` : "none" }}>
                   <textarea
-                    style={{ 
-                      width: "100%", minHeight: "500px", fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace", 
-                      fontSize: "15px", lineHeight: "1.7", border: "none", outline: "none", resize: "none", 
-                      backgroundColor: "transparent", color: "#334155" 
-                    }}
-                    placeholder="Write your markdown here... Use standard syntax like # Headings, **bold**, and `code`."
-                    value={activePage.content || ""}
-                    onChange={handleContentChange}
+                    ref={textareaRef}
+                    data-testid="editor-source"
+                    aria-label="Page source (MDX)"
+                    value={draft}
+                    readOnly={!canEdit}
+                    spellCheck={false}
+                    onChange={(e) => setDraft(e.target.value)}
+                    style={{ flex: 1, width: "100%", resize: "none", border: "none", outline: "none", padding: "20px 24px", fontFamily: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace", fontSize: "13.5px", lineHeight: 1.7, color: "#1e293b", backgroundColor: "#fff", tabSize: 2 }}
                   />
-                ) : (
-                  <div className="prose max-w-none p-8" style={{ minHeight: "500px" }}>
-                    <ReactMarkdown
-                      components={{
-                        code({node, inline, className, children, ...props}) {
-                          const match = /language-(\w+)/.exec(className || '')
-                          return !inline && match ? (
-                            <SyntaxHighlighter
-                              style={vscDarkPlus}
-                              language={match[1]}
-                              PreTag="div"
-                              className="rounded-md my-4"
-                              {...props}
-                            >
-                              {String(children).replace(/\n$/, '')}
-                            </SyntaxHighlighter>
-                          ) : (
-                            <code className="bg-slate-100 text-slate-800 px-1 py-0.5 rounded text-sm" {...props}>
-                              {children}
-                            </code>
-                          )
-                        },
-                        blockquote({node, children, ...props}) {
-                          return (
-                            <blockquote className="border-l-4 border-emerald-500 bg-slate-50 text-slate-700 py-2 px-4 my-4 rounded-r-md italic" {...props}>
-                              {children}
-                            </blockquote>
-                          )
-                        }
-                      }}
-                    >
-                      {activePage.content || ""}
-                    </ReactMarkdown>
+                  {preview && !preview.ok && (
+                    <div data-testid="editor-error" role="alert" style={{ padding: "8px 16px", fontSize: "12px", color: colors.danger, backgroundColor: "#fef2f2", borderTop: "1px solid #fecaca" }}>
+                      {preview.error.line ? `Line ${preview.error.line}: ` : ""}{preview.error.message}
+                    </div>
+                  )}
+                </div>
+              )}
+              {shownView !== "write" && (
+                <div data-testid="editor-preview" style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "32px 40px", backgroundColor: "#fff" }}>
+                  {preview?.ok ? (
+                    <article>
+                      <h1 style={{ fontSize: "30px", fontWeight: 700, color: colors.text, margin: "0 0 8px" }}>{preview.title || page.title}</h1>
+                      {preview.description && <p style={{ fontSize: "16px", color: colors.muted, margin: "0 0 24px" }}>{preview.description}</p>}
+                      <div className="mdx-content"><SafeMdxRenderer tree={preview.tree} linkBase={docsBase} sitePrefix={docsBase} /></div>
+                    </article>
+                  ) : preview ? (
+                    <p style={{ color: colors.muted, fontSize: "14px" }}>The preview updates when the page compiles again.</p>
+                  ) : (
+                    <p style={{ color: colors.muted, fontSize: "14px" }}>Loading preview…</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+
+        {panel === "history" && page && (
+          <SidePanel title="Page history" onClose={() => setPanel(null)} testId="history-panel">
+            {history === null ? <p style={{ fontSize: "13px", color: colors.muted }}>Loading…</p> : history.length === 0 ? (
+              <p style={{ fontSize: "13px", color: colors.muted }}>No history yet. Versions are recorded from the next change on.</p>
+            ) : (
+              <ol style={{ listStyle: "none", margin: "0 0 16px", padding: 0, display: "grid", gap: "4px" }}>
+                {history.map((r, i) => (
+                  <li key={r.id}>
+                    <button type="button" data-testid="history-entry" onClick={() => showRevision(r)} style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: "6px", cursor: "pointer", border: `1px solid ${selectedRevision?.id === r.id ? "#94a3b8" : colors.border}`, backgroundColor: "#fff" }}>
+                      <div style={{ fontSize: "13px", fontWeight: 500, color: colors.text }}>
+                        {r.deleted ? "Deleted" : r.message || SOURCE_LABELS[r.source]}{i === 0 && !r.deleted ? <span style={{ color: colors.muted, fontWeight: 400 }}> · current</span> : null}
+                      </div>
+                      <div style={{ fontSize: "12px", color: colors.muted }}>{SOURCE_LABELS[r.source]} · {formatDate(r.created_at)}</div>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {selectedRevision && (
+              <div>
+                <p style={{ fontSize: "13px", color: "#334155", margin: "0 0 8px" }}>Restoring this version would make these changes to the page:</p>
+                <DiffView before={draft} after={selectedRevision.content} testId="history-diff" />
+                {canEdit && <button type="button" data-testid="restore" onClick={restore} disabled={busy || selectedRevision.content === page.content} style={{ ...button("primary"), marginTop: "12px" }}>Restore this version</button>}
+              </div>
+            )}
+          </SidePanel>
+        )}
+
+        {panel === "suggestion" && page && (
+          <SidePanel title="AI suggestion" onClose={() => setPanel(null)} testId="suggestion-panel">
+            {!suggestion ? <p style={{ fontSize: "13px", color: colors.muted }}>Loading…</p> : (
+              <>
+                <p style={{ fontSize: "13px", color: "#334155", margin: "0 0 8px" }}>Accepting would make these changes to the published page:</p>
+                <DiffView before={page.content} after={suggestion.content} testId="suggestion-diff" />
+                {canEdit && (
+                  <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                    <button type="button" data-testid="accept-suggestion" onClick={acceptSuggestion} disabled={busy} style={button("primary")}>Accept and publish</button>
+                    <button type="button" data-testid="edit-suggestion" onClick={() => { setDraft(suggestion.content); setPanel(null); setStatus({ kind: "ok", text: "Suggestion loaded into the editor. Publish when ready." }); }} style={button()}>Edit before publishing</button>
+                    <button type="button" data-testid="dismiss-suggestion" onClick={dismissSuggestion} style={button()}>Dismiss</button>
                   </div>
                 )}
               </>
-            ) : (
-              <div style={{ textAlign: "center", color: "#94a3b8", marginTop: "100px", fontSize: "15px" }}>
-                Select a file from the sidebar, or click "+ Add new" to create one.
-              </div>
             )}
-          </div>
+          </SidePanel>
+        )}
 
-        </div>
-
+        {panel === "conflict" && conflict && (
+          <SidePanel title="This page changed" onClose={() => setPanel(null)} testId="conflict-panel">
+            <p style={{ fontSize: "13px", color: "#334155", margin: "0 0 8px" }}>
+              Someone else (or an AI update) published this page after you opened it. Publishing yours would make these changes to their version:
+            </p>
+            <DiffView before={conflict.content} after={draft} testId="conflict-diff" />
+            <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+              <button type="button" data-testid="publish-mine" onClick={() => publish({ overrideEtag: conflict.etag })} disabled={busy} style={button("primary")}>Publish mine anyway</button>
+              <button type="button" data-testid="use-theirs" onClick={() => { setPage((p) => ({ ...p, content: conflict.content, etag: conflict.etag })); setDraft(conflict.content); setPanel(null); setConflict(null); setStatus({ kind: "ok", text: "Loaded the latest version" }); }} style={button()}>Use their version</button>
+            </div>
+          </SidePanel>
+        )}
       </div>
     </div>
   );
