@@ -13,13 +13,15 @@ const { loadSite, loadPage, loadMarkdown, listSites, firstRoute, renderDocument,
 function pageCsp(config) {
     const supabase = config.supabase.url ? new URL(config.supabase.url).origin : "";
     const supabaseWs = supabase.replace(/^http/, "ws");
+    // On a custom domain the docs app calls the API cross-origin, at PUBLIC_URL.
+    const api = config.publicUrl ? new URL(config.publicUrl).origin : "";
     return [
         "default-src 'self'",
         "script-src 'self' https://checkout.razorpay.com",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src 'self' https://fonts.gstatic.com data:",
         "img-src 'self' data: https:",
-        `connect-src 'self' ${supabase} ${supabaseWs} https://*.supabase.co wss://*.supabase.co`.trim(),
+        `connect-src 'self' ${api} ${supabase} ${supabaseWs} https://*.supabase.co wss://*.supabase.co`.trim(),
         "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com",
         "object-src 'none'",
         "base-uri 'self'",

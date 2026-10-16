@@ -157,3 +157,10 @@ test("custom domains are normalized and verified by DNS TXT record", async () =>
         assert.throws(() => normalizeDomain(bad, { appHostnames: ["app.docgen.dev"] }), DomainError, bad);
     }
 });
+
+test("page CSP lets the docs app call the API from a custom domain", () => {
+    const { pageCsp } = require("../routes/site");
+    const csp = pageCsp({ supabase: { url: "https://abc.supabase.co" }, publicUrl: "https://api.example.com/" });
+    const connect = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("connect-src"));
+    assert.match(connect, /'self' https:\/\/api\.example\.com https:\/\/abc\.supabase\.co wss:\/\/abc\.supabase\.co/);
+});
