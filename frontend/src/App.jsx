@@ -11,6 +11,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectOverview from "./pages/ProjectOverview";
 import ProjectSettings from "./pages/ProjectSettings";
 import DomainSetup from "./pages/settings/DomainSetup";
+import GitSettings from "./pages/settings/GitSettings";
 import Authentication from "./pages/settings/Authentication";
 import General from "./pages/settings/General";
 import ApiKeys from "./pages/settings/ApiKeys";
@@ -18,6 +19,8 @@ import DangerZone from "./pages/settings/DangerZone";
 import Profile from "./pages/settings/Profile";
 import Billing from "./pages/settings/Billing";
 import AgentSkills from "./pages/settings/AgentSkills";
+import AiProviders from "./pages/settings/AiProviders";
+import AccountAiSettings from "./pages/AccountAiSettings";
 import Editor from "./pages/Editor";
 import NavigationEditor from "./pages/NavigationEditor";
 import Analytics from "./pages/Analytics";
@@ -48,8 +51,12 @@ function AuthListener() {
           console.log('Session refreshed');
         }
         if (event === 'SIGNED_IN' && session?.user) {
-          handleFirstLogin(session.user);
-          claimOrphanProjects(); 
+          // Supabase runs this callback while holding its auth lock: calling Supabase here
+          // directly deadlocks every other auth call (pages hang on "Loading..."). Defer it.
+          setTimeout(() => {
+            handleFirstLogin(session.user);
+            claimOrphanProjects();
+          }, 0);
           
           // --- THE LOOP FIX ---
           // Only redirect to the dashboard if they are on a public page!
@@ -74,11 +81,11 @@ function App() {
   useEffect(() => {
     const hostname = window.location.hostname;
     
-    const isMainApp = 
-      hostname === 'localhost' || 
-      hostname === '127.0.0.1' || 
-      hostname.includes('prismify.yashwant.xyz') || 
-      hostname.includes('docgen.app');
+    // Any other hostname is a docs site's custom domain. Set VITE_APP_HOSTNAMES
+    // (comma-separated) to the hostnames the dashboard itself runs on.
+    const appHostnames = (import.meta.env.VITE_APP_HOSTNAMES || "localhost,127.0.0.1,prismify.yashwant.xyz,docgen.app")
+      .split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+    const isMainApp = appHostnames.some((h) => hostname === h || hostname.endsWith(`.${h}`));
 
     if (isMainApp) {
       setIsLoadingDomain(false);
@@ -136,6 +143,7 @@ function App() {
           {/* General Dashboard routes (no sidebar yet) */}
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/dashboard/new" element={<ProtectedRoute><NewProject /></ProtectedRoute>} />
+          <Route path="/settings/ai" element={<ProtectedRoute><AccountAiSettings /></ProtectedRoute>} />
           
           {/* --- NEW: Nested Routing using DashboardLayout --- */}
           <Route path="/dashboard/:id" element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
@@ -147,9 +155,11 @@ function App() {
             <Route path="settings" element={<ProjectSettings />}>
               <Route index element={<Navigate to="domain" replace />} />
               <Route path="domain" element={<DomainSetup />} />
+              <Route path="git" element={<GitSettings />} />
               <Route path="authentication" element={<Authentication />} />
               <Route path="general" element={<General />} />
               <Route path="agent" element={<AgentSkills />} />
+              <Route path="ai" element={<AiProviders />} />
               <Route path="api-keys" element={<ApiKeys />} />
               <Route path="danger-zone" element={<DangerZone />} />
               <Route path="profile" element={<Profile />} />
@@ -164,7 +174,8 @@ function App() {
             
           </Route>
 
-          <Route path="/docs/:tenant/:version/*" element={<ProtectedRoute><DocEngine /></ProtectedRoute>} />
+          {/* Published docs are public: readers and search engines don't need an account */}
+          <Route path="/docs/:tenant/:version/*" element={<DocEngine />} />
           
           {/* --- NEW: The PLG Explore Route --- */}
           <Route path="/explore/:tenant/:version" element={<Explore />} />

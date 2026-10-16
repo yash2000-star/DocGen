@@ -1,26 +1,19 @@
 import { NavLink } from "react-router-dom"; 
-import SearchModal from "./SearchModal";
+import { titleFromRoute } from "../lib/siteNav";
 
-// Helper function to format clean titles from URL slugs
-function formatTitle(slug) {
-  if (!slug) return "Index";
-  const parts = slug.split('/');
-  const lastPart = parts[parts.length - 1]; // e.g., 'quickstart' from 'getting-started/quickstart'
-  return lastPart
-    .replace(/[-_]/g, ' ')
-    .split(' ')
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
-}
-
-// --- NEW: Accept the custom props + the docs.json navigation array! ---
-export default function Sidebar({ customTenant, customVersion, navigation = [] }) {
+/**
+ * @param {object} props
+ * @param {Array} props.navigation - Groups to show (the active tab's)
+ * @param {Object<string, { title: string }>} [props.pages] - From site.json, for page titles
+ * @param {string} props.linkBase - /docs/<tenant>/<project>, or "" on a custom domain
+ */
+export default function Sidebar({ navigation = [], pages = {}, linkBase = "" }) {
   
   function renderNavigation() {
     return navigation.map((navGroup, index) => {
       // navGroup format from docs.json: { group: "String", pages: [...] }
       const groupName = navGroup.group || "Documentation";
-      const pages = navGroup.pages || [];
+      const groupPages = navGroup.pages || [];
 
       return (
         <div key={index} style={{ marginTop: "24px" }}>
@@ -28,7 +21,7 @@ export default function Sidebar({ customTenant, customVersion, navigation = [] }
             color: "#0f172a", 
             fontSize: "13px", 
             fontWeight: "600",
-            textTransform: "capitalize",
+            textTransform: "none",
             paddingLeft: "12px",
             display: "block",
             marginBottom: "8px"
@@ -36,13 +29,11 @@ export default function Sidebar({ customTenant, customVersion, navigation = [] }
             {groupName}
           </strong>
           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-            {pages.map((page, pIdx) => {
+            {groupPages.map((page, pIdx) => {
               // Page could be just a string slug or an object if they customize further
-              const pageRoute = typeof page === 'string' ? page : page.route;
-              const pageTitle = typeof page === 'string' ? formatTitle(page) : page.title;
-              
-              // Construct the absolute path for React Router
-              const fullPath = `/docs/${customTenant}/${customVersion}/${pageRoute}`;
+              const pageRoute = typeof page === 'string' ? page : page.route || page.page;
+              const pageTitle = pages[pageRoute]?.title || (typeof page === 'object' && page.title) || titleFromRoute(pageRoute);
+              const fullPath = `${linkBase}/${pageRoute}`;
 
               return (
                 <NavLink

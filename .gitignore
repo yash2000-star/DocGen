@@ -4,3 +4,6 @@ dist/
 repos/
 docs/
 .DS_Store
+# Generated on server start by lib/generateSkill.js
+.well-known/llms.txt
+.well-known/skills/

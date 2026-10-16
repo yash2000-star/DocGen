@@ -1,21 +1,14 @@
-require("dotenv").config();
-const { GoogleGenAI } = require("@google/genai");
 const editDocs = require("./aiEditor");
+const { isFatalLLMError } = require("./ai/errors");
+const { buildSourceDigest } = require("./ai/sourceDigest");
+const { stripCodeFence } = require("./ai/text");
+const { ensureValidMdx } = require("./mdx/repair");
 
-// Google Gen AI SDK for Vertex requires region and project parameters.
-// We lazily instantiate the client so it doesn't crash the server on boot if ADC is missing.
-let clientInstance = null;
-function getVertexClient() {
-    if (!clientInstance) {
-        clientInstance = new GoogleGenAI({
-            vertexai: {
-                project: process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || "my-gcp-project",
-                location: process.env.CLOUD_ML_REGION || process.env.GOOGLE_CLOUD_REGION || "us-east5"
-            }
-        });
-    }
-    return clientInstance;
-}
+// Every function here takes `llm`: the user's own AI provider, from getUserLLM().
+//   { client, writerModel, criticModel, promptBudgetTokens? }
+// Prompt size is capped so large repos fit in the model's context window.
+const DEFAULT_PROMPT_BUDGET_TOKENS = 60000;
+const budgetFor = (llm) => llm.promptBudgetTokens || DEFAULT_PROMPT_BUDGET_TOKENS;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PHASE 1: THE SUPER-ARCHITECT
@@ -23,41 +16,18 @@ function getVertexClient() {
 // This is the brain — it decides what pages to create, not just group files.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generateArchitectBlueprint(codeFiles, contextFiles, projectName) {
+/**
+ * @param {object} [options]
+ * @param {{ specPath: string, operations: number, tags: string[] }} [options.apiReference] -
+ *   Set when an OpenAPI spec was found: its reference pages are generated from the spec, so
+ *   the plan shouldn't document endpoints one by one.
+ */
+async function generateArchitectBlueprint(codeFiles, contextFiles, projectName, llm, { apiReference } = {}) {
 
-    // Build a comprehensive source digest for the AI
-    let sourceDigest = "";
-
-    // Priority 1: README (the human-written project description)
-    const readme = contextFiles.find(f => f.type === "readme");
-    if (readme) {
-        sourceDigest += `\n### README.md\n${readme.code}\n`;
-    }
-
-    // Priority 2: package.json (dependencies, scripts, project metadata)
-    const pkg = contextFiles.find(f => f.type === "package");
-    if (pkg) {
-        sourceDigest += `\n### package.json\n${pkg.code}\n`;
-    }
-
-    // Priority 3: All code files (with paths for structure understanding)
-    for (const file of codeFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`\n${file.code.substring(0, 8000)}\n\`\`\`\n`;
-    }
-
-    // Priority 4: HTML files (for frontend-heavy projects)
-    const htmlFiles = contextFiles.filter(f => f.type === "html");
-    for (const file of htmlFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`html\n${file.code.substring(0, 5000)}\n\`\`\`\n`;
-    }
-
-    // Priority 5: CSS files
-    const cssFiles = contextFiles.filter(f => f.type === "style");
-    for (const file of cssFiles) {
-        const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-        sourceDigest += `\n### ${shortPath}\n\`\`\`css\n${file.code.substring(0, 3000)}\n\`\`\`\n`;
+    // A digest of the codebase, most important files first, within the prompt budget.
+    const { text: sourceDigest, omitted } = buildSourceDigest({ codeFiles, contextFiles, budgetTokens: budgetFor(llm) });
+    if (omitted.length > 0) {
+        console.log(`[Architect] Prompt budget reached; ${omitted.length} files listed by name only.`);
     }
 
     const prompt = `You are the Documentation Architect at Mintlify. You design documentation sites that feel like they were written by a real human technical writer — not auto-generated.
@@ -70,7 +40,7 @@ Mintlify generates conceptual pages, not file dumps. For example, from a simple 
 - "Introduction" — welcoming overview with feature cards
 - "Quickstart" — get running in 2 minutes
 - "Setup" — environment & dependencies  
-- "Getting an API key" — external knowledge about APIs used
+- "Getting an API key" — only because the code calls a weather API
 - "Customization" — how to modify the app
 - "Weather data" — API/data reference
 - "UI components" — DOM element reference
@@ -90,6 +60,8 @@ Notice: Most pages DON'T map 1:1 to a source file. They are synthesized from the
    - "Get Started" — Introduction, Quickstart (onboarding)
    - "Guides" — Task-oriented how-to pages (setup, config, customization)
    - "Reference" — Technical deep-dives (API, data models, components)
+9. Plan only pages the codebase supports. Don't plan pages about features, services or settings the code doesn't have.${apiReference ? `
+10. An API reference is generated automatically from the OpenAPI spec \`${apiReference.specPath}\` (${apiReference.operations} endpoints${apiReference.tags.length ? `, groups: ${apiReference.tags.slice(0, 10).join(", ")}` : ""}). Do NOT plan pages that document individual endpoints. You may plan one guide on using the API (authentication, errors, pagination) that links to the reference at /api-reference.` : ""}
 
 ## OUTPUT FORMAT
 Output ONLY valid JSON matching this exact structure. No markdown fences. No explanation.
@@ -135,28 +107,24 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 
     try {
         console.log(`\n🏛️  Super-Architect is designing the documentation site plan...`);
-        const response = await getVertexClient().models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                maxOutputTokens: 8192,
-                temperature: 0.4
-            }
+        const response = await llm.client.generateText({
+            model: llm.writerModel,
+            prompt,
+            temperature: 0.4,
         });
-        let rawText = response.text.trim();
-
-        // Strip markdown backticks if AI hallucinates them
-        if (rawText.startsWith('```json')) {
-            rawText = rawText.replace(/^```json/, '').replace(/```$/, '').trim();
-        } else if (rawText.startsWith('```')) {
-            rawText = rawText.replace(/^```/, '').replace(/```$/, '').trim();
+        if (response.truncated) {
+            console.warn("[Architect] The response hit the output limit; the plan may be incomplete.");
         }
 
-        const blueprint = JSON.parse(rawText);
+        const blueprint = JSON.parse(stripCodeFence(response.text));
 
-        // Validate the structure
+        // Validate the structure, and drop pages missing the fields the writer needs
         if (!blueprint.pages || !Array.isArray(blueprint.pages)) {
             throw new Error("Blueprint missing 'pages' array");
+        }
+        blueprint.pages = blueprint.pages.filter((p) => p && p.slug && p.title && p.group);
+        if (blueprint.pages.length === 0) {
+            throw new Error("Blueprint has no usable pages");
         }
 
         console.log(`✅ Architect designed ${blueprint.pages.length} pages across the site.`);
@@ -164,7 +132,9 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 
         return blueprint;
     } catch (error) {
-        console.error("❌ Super-Architect failed:", error);
+        // A bad key or missing model would fail every later call too: stop the run.
+        if (isFatalLLMError(error)) throw error;
+        console.error("❌ Super-Architect failed:", error.message);
         // Fallback: generate a minimal 2-page plan
         return {
             projectName: projectName,
@@ -200,51 +170,47 @@ OUTPUT ONLY VALID JSON. No backticks. No explanation. Raw JSON only.`;
 // Each page is written differently based on its type and purpose.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint) {
+async function generatePage(pagePlan, allCodeFiles, allContextFiles, fullBlueprint, llm, { onDraft } = {}) {
 
     // Build the source context based on what the Architect requested
+    const budgetTokens = budgetFor(llm);
     let relevantSource = "";
 
-    if (pagePlan.sourceContext === "all") {
-        // Overview pages get everything (truncated)
-        const readme = allContextFiles.find(f => f.type === "readme");
-        if (readme) relevantSource += `### README.md\n${readme.code}\n\n`;
-
-        const pkg = allContextFiles.find(f => f.type === "package");
-        if (pkg) relevantSource += `### package.json\n${pkg.code}\n\n`;
-
-        for (const file of allCodeFiles) {
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
-        }
-
-        for (const file of allContextFiles.filter(f => f.type === "html" || f.type === "style")) {
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 3000)}\n\`\`\`\n\n`;
-        }
-    } else {
+    if (pagePlan.sourceContext !== "all" && typeof pagePlan.sourceContext === "string") {
         // Specific pages get targeted files
-        const targetNames = pagePlan.sourceContext.split(",").map(s => s.trim().toLowerCase());
-
-        for (const file of [...allCodeFiles, ...allContextFiles]) {
+        const targetNames = pagePlan.sourceContext.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const matches = (file) => {
             const fileName = file.path.split(/[/\\]/).pop().toLowerCase();
-            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-            if (targetNames.some(t => fileName.includes(t) || shortPath.toLowerCase().includes(t))) {
-                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 6000)}\n\`\`\`\n\n`;
-            }
-        }
-
-        // If no specific files matched, provide everything as fallback
-        if (!relevantSource) {
-            for (const file of allCodeFiles) {
-                const shortPath = file.path.split(/[/\\]/).slice(-3).join("/");
-                relevantSource += `### ${shortPath}\n\`\`\`\n${file.code.substring(0, 4000)}\n\`\`\`\n\n`;
-            }
+            const shortPath = file.path.split(/[/\\]/).slice(-3).join("/").toLowerCase();
+            return targetNames.some(t => fileName.includes(t) || shortPath.includes(t));
+        };
+        const targetedCode = allCodeFiles.filter(matches);
+        const targetedContext = allContextFiles.filter(matches);
+        if (targetedCode.length + targetedContext.length > 0) {
+            relevantSource = buildSourceDigest({
+                codeFiles: targetedCode,
+                contextFiles: targetedContext,
+                budgetTokens,
+                maxChars: { code: 6000, html: 6000, style: 6000 },
+            }).text;
         }
     }
 
+    // Overview pages, and pages whose files didn't match, get everything (truncated)
+    if (!relevantSource) {
+        relevantSource = buildSourceDigest({
+            codeFiles: allCodeFiles,
+            contextFiles: allContextFiles,
+            budgetTokens,
+            maxChars: { code: 4000, html: 3000, style: 3000 },
+        }).text;
+    }
+
     // Build the navigation context so pages can reference each other
-    const navContext = fullBlueprint.pages.map(p => `- [${p.title}](/${p.slug})`).join("\n");
+    const navContext = [
+        ...fullBlueprint.pages.map(p => `- [${p.title}](/${p.slug})`),
+        ...(fullBlueprint.apiReference ? ["- [API reference](/api-reference) (generated from the OpenAPI spec: link here for endpoint details)"] : []),
+    ].join("\n");
 
     const prompt = `You are an elite Technical Writer at Mintlify. You write documentation that feels like it was crafted by a real person — warm, professional, concise, and genuinely helpful. Your docs should feel like MongoDB's official docs or Stripe's API reference — premium and polished.
 
@@ -295,7 +261,7 @@ Use these components generously to make the documentation feel rich and interact
 ### Cards (use for feature highlights, navigation, module overviews)
 \`\`\`mdx
 <CardGroup cols={2}>
-  <Card title="Feature" icon="⚡">
+  <Card title="Feature" icon="zap">
     Description of the feature.
   </Card>
 </CardGroup>
@@ -323,6 +289,9 @@ curl -X GET https://api.example.com/users
 - \`<Badge>NEW</Badge>\` — inline labels
 - \`<Tooltip tip="explanation">term</Tooltip>\` — hover definitions
 
+### Icons
+Card and Accordion \`icon\` values are icon names, never emoji: rocket, zap, code, book-open, settings, terminal, key, shield, database, globe, package, wrench, file-text, users, layers.
+
 ## WRITING STYLE RULES (THIS IS CRITICAL)
 
 1. **Be concise.** Short paragraphs (2-3 sentences max). No fluff. No filler.
@@ -330,14 +299,15 @@ curl -X GET https://api.example.com/users
 3. **Use components aggressively.** Every procedure → Steps. Every tip → Note/Tip. Every feature list → CardGroup.
 4. **Write for humans.** Imagine a developer at 11pm trying to get this working. Be clear, direct, and helpful.
 5. **Add real value.** Don't just describe what the code does — explain WHY and WHEN to use it.
-6. **Cross-reference.** Mention other pages in the site ("See the [Quickstart](/quickstart) guide to get started.")
-7. **Use external knowledge.** If the code uses an API (like OpenWeatherMap), explain how to get API keys, rate limits, etc.
+6. **Cross-reference.** Link to other pages from the site map using their exact slug, like [Quickstart](/quickstart). Don't link to pages that aren't in the site map.
+7. **Stick to the source.** Describe only files, commands, settings and behaviour you can see in the source code below. Never invent file names, environment variables, npm scripts, packages, endpoints or options. If the code calls an external service, you may say how to get its API key, but don't make up its limits or prices. When unsure, leave it out.
 8. **No redundancy.** Never repeat the title in the first sentence. Start with substance.
 
 ## REQUIRED FRONTMATTER FORMAT
 Start your output with EXACTLY this YAML frontmatter:
 ---
 title: "${pagePlan.title}"
+description: "One sentence (under 160 characters) saying what this page helps the reader do."
 group: "${pagePlan.group}"
 order: ${fullBlueprint.pages.indexOf(pagePlan) + 1}
 ---
@@ -348,31 +318,38 @@ ${relevantSource}
 ## OUTPUT RULES
 1. Output ONLY raw MDX starting with the --- frontmatter. No preamble. No wrapper fences.
 2. Never invent component names not in the toolkit above.
-3. Every code block must have a language tag.
-4. The document should feel like a premium, hand-crafted page — not an AI dump.`;
+3. No import/export statements and no JavaScript in {braces}: prop values are plain text, numbers or JSON. Code in a page is removed before publishing.
+4. Every code block must have a language tag.
+5. The document should feel like a premium, hand-crafted page — not an AI dump.`;
 
     try {
         console.log(`\n✍️  Ghostwriter is crafting: "${pagePlan.title}" [${pagePlan.type}]...`);
 
-        const response = await getVertexClient().models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                maxOutputTokens: 8192,
-                temperature: 0.5
-            }
+        const response = await llm.client.generateText({
+            model: llm.writerModel,
+            prompt,
+            temperature: 0.5,
         });
+        if (response.truncated) {
+            console.warn(`[Ghostwriter] "${pagePlan.title}" hit the output limit and may be cut off.`);
+        }
         const draftText = response.text;
 
         console.log(`✅ Ghostwriter drafted "${pagePlan.title}". Passing to Critic...`);
 
-        // Pass to the editor for cleanup and validation
-        const sourceCode = allCodeFiles.map(f => f.code).join("\n\n---\n\n").substring(0, 15000);
-        const finalPolishedText = await editDocs(draftText, sourceCode);
+        // The critic checks the draft against the same source the writer used.
+        const finalPolishedText = await editDocs(draftText, relevantSource, llm);
 
-        return finalPolishedText;
+        // Only publish pages that compile; broken ones go back to the critic to fix.
+        const checked = await ensureValidMdx(finalPolishedText, llm, pagePlan.title);
+        if (!checked) return null;
+
+        // Fact and link checks against the repository (see quality/factCheck.js).
+        return onDraft ? await onDraft(checked.mdx, { relevantSource }) : checked.mdx;
     } catch (error) {
-        console.error(`❌ Ghostwriter failed on "${pagePlan.title}":`, error);
+        // A bad key or missing model would fail every later page too: stop the run.
+        if (isFatalLLMError(error)) throw error;
+        console.error(`❌ Ghostwriter failed on "${pagePlan.title}":`, error.message);
         return null;
     }
 }
@@ -383,7 +360,7 @@ ${relevantSource}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // The old generateDocs function is preserved as a fallback
-async function generateDocs(file, codeMap, blueprint) {
+async function generateDocs(file, llm, options = {}) {
     // Wrap the old single-file call into the new page-based system
     const pagePlan = {
         slug: file.path.split(/[/\\]/).pop().replace(/\.[^.]+$/, ''),
@@ -400,7 +377,7 @@ async function generateDocs(file, codeMap, blueprint) {
         pages: [pagePlan]
     };
 
-    return await generatePage(pagePlan, [file], [], dummyBlueprint);
+    return await generatePage(pagePlan, [file], [], dummyBlueprint, llm, options);
 }
 
 module.exports = { generateDocs, generatePage, generateArchitectBlueprint };

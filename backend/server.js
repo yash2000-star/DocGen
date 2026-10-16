@@ -1,56 +1,73 @@
+// Load and validate configuration before anything else touches process.env.
+const { config, assertRequiredConfig, logOptionalFeatures } = require("./config");
+try {
+    assertRequiredConfig();
+} catch (err) {
+    console.error(`\n[Config] ${err.message}\n`);
+    process.exit(1);
+}
+
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
-const cookieParser = require('cookie-parser');
-const csrf         = require('csurf');
 const helmet = require('helmet');
 const crypto = require('crypto');
-const cloneRepo = require("./gitServices");
-const scanCodeFiles = require("./codeScanner");
-const { generateDocs, generatePage, generateArchitectBlueprint } = require("./aiWriter");
-const analyzeRepo = require("./repoAnalyzer");
-const Razorpay = require('razorpay');
+const { buildProject, filterChangedFiles } = require("./services/generationPipeline");
+const { isSpecFileName } = require("./openapi");
+const { DOCS_DIR, DIST_DIR, isSafeSegment, parseGithubRepoUrl } = require("./lib/paths");
+const supabase = require("./lib/supabase");
+const { getUserLLM, getPreviewLLM } = require("./services/aiCredentials");
+const { createRateLimiter } = require("./lib/rateLimit");
+const { createOriginCheck } = require("./lib/originCheck");
+const { enqueueJob, enqueueWebhookUpdate, getJob, cancelJob } = require("./jobs/queue");
+const { createWorker } = require("./jobs/worker");
+const { describeAiError } = require("./ai/httpErrors");
+const { compileSafeMdx } = require("./mdx/safeMdx");
+const { proxyRequest, ProxyError } = require("./services/apiProxy");
+const { getWebhookSecret, getOrCreateWebhookSecret, rotateWebhookSecret, hasValidSignature } = require("./services/webhookSecrets");
+const customDomains = require("./services/customDomains");
+const { createSiteRouter, pageCsp } = require("./routes/site");
+const { loadSite } = require("./seo/site");
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-require("dotenv").config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { createClient } = require("@supabase/supabase-js");
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_KEY
-);
+// Billing is optional: Razorpay is only set up when its keys are present.
+let razorpay = null;
+if (config.razorpay.enabled) {
+    const Razorpay = require('razorpay');
+    razorpay = new Razorpay({
+        key_id: config.razorpay.keyId,
+        key_secret: config.razorpay.keySecret,
+    });
+}
 
 const askAI = require("./ai.service");
-const validator = require('validator');
 
 const app = express();
+// Behind a load balancer or reverse proxy, set TRUST_PROXY (e.g. 1) so req.ip is the
+// visitor's address and rate limits apply per visitor, not to the proxy as a whole.
+if (config.trustProxy !== false) app.set('trust proxy', config.trustProxy);
 const publicRoutes = require('./routes/public');
 const mcpRoutes = require('./routes/mcp');
+const { createAiRouter } = require('./routes/ai');
 const { generateSkill, getSkillIndex } = require('../lib/generateSkill');
 
-app.use(cors({
-    origin: 'http://localhost:5173', 
-    credentials: true 
+// The dashboard calls the API from FRONTEND_URL. Readers' endpoints (docs pages, search,
+// Ask AI, feedback) are anonymous and are also called from docs on custom domains, so they
+// accept any origin, without credentials.
+const PUBLIC_READER_PATHS = [/^\/api\/(static|page|docs|ask|feedback|domain|public)(\/|$)/, /^\/docs\//];
+app.use(cors((req, callback) => {
+    const isPublic = PUBLIC_READER_PATHS.some((pattern) => pattern.test(req.path));
+    callback(null, isPublic ? { origin: true, credentials: false } : { origin: config.frontendUrl, credentials: true });
 }));
 
 // --- WEBHOOK RAW BODY EXCEPTION ---
 app.use((req, res, next) => {
-  if (req.path === '/api/billing/webhook') {
-    // Keep raw body for Razorpay signature verification
-    express.raw({ type: 'application/json' })(req, res, next);
+  if (req.path === '/api/billing/webhook' || req.path === '/api/webhook') {
+    // Keep the raw body for Razorpay and GitHub signature verification
+    express.raw({ type: 'application/json', limit: '5mb' })(req, res, next);
   } else {
     // For all other routes, parse JSON normally
-    express.json()(req, res, next);
+    express.json({ limit: '1mb' })(req, res, next);
   }
 });
 
@@ -59,14 +76,20 @@ app.post('/api/billing/webhook', async (req, res) => {
     try {
         // 1. Verify the signature to ensure it actually came from Razorpay
         const webhookSignature = req.headers['x-razorpay-signature'];
-        const webhookSecret    = process.env.RAZORPAY_WEBHOOK_SECRET;
+        const webhookSecret    = config.razorpay.webhookSecret;
+
+        if (!webhookSecret) {
+            return res.status(503).json({ error: 'Billing webhook is not configured.' });
+        }
 
         const expectedSignature = crypto
             .createHmac('sha256', webhookSecret)
             .update(req.body) // This works because of the raw body exception we added!
             .digest('hex');
 
-        if (webhookSignature !== expectedSignature) {
+        const received = Buffer.from(String(webhookSignature || ''));
+        const expected = Buffer.from(expectedSignature);
+        if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
             console.error('Invalid Razorpay webhook signature');
             return res.status(400).json({ error: 'Invalid signature' });
         }
@@ -152,68 +175,95 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:  ["'self'"],
-      scriptSrc:   ["'self'", "'unsafe-eval'"],
+      scriptSrc:   ["'self'"],
+      objectSrc:   ["'none'"],
+      frameAncestors: ["'self'"],
       styleSrc:    ["'self'", "'unsafe-inline'"],
       imgSrc:      ["'self'", 'data:', 'https:'],
-      connectSrc:  ["'self'", 'https://*.supabase.co', 'https://generativelanguage.googleapis.com'],
+      connectSrc:  ["'self'", 'https://*.supabase.co'],
       frameSrc:    ["'self'"]
     },
   },
 }));
 
-// --- SECURITY: Cookie Parser & CSRF Setup ---
-app.use(cookieParser());
-
-const csrfProtection = csrf({
-    cookie: {
-        httpOnly: true,
-        secure:   process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-    }
-});
-
-app.get('/api/csrf-token', csrfProtection, (req, res) => {
-    res.json({ csrfToken: req.csrfToken() });
-});
+// --- SECURITY: cross-site requests ---
+// State-changing dashboard requests must come from the dashboard (see lib/originCheck.js).
+const csrfProtection = createOriginCheck([config.frontendUrl]);
 
 app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();
 });
 
-app.use("/api/static", express.static(path.join(__dirname, "../dist")));
+// Public docs as crawlable HTML, sitemaps, robots.txt, and verified custom domains.
+app.use(createSiteRouter({ config, findCustomDomain: customDomains.findVerifiedDomain }));
 
-// --- NEW (PHASE 3): DYNAMIC DOCS FETCHING ROUTE ---
-app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
-    // req.params.docPath holds the exact file path dynamically matched
-    let docPath = req.params.docPath;
+app.use("/api/static", express.static(DIST_DIR));
 
-    // AI Agents might request .md files directly, so strip the extension if present to match our .mdx files
-    if (docPath.endsWith('.md')) {
-        docPath = docPath.slice(0, -3);
+// --- DOCS PAGES ---
+// Resolves /:tenant/:version/<page path> to a file in dist/, or answers 400/404 itself.
+function resolveDistPage(req, res, extension) {
+    const { tenant, version } = req.params;
+
+    // Express 5 gives the wildcard as an array of path segments, e.g. ['guides', 'setup']
+    const segments = [].concat(req.params.docPath);
+
+    // AI Agents might request .md/.mdx files directly, so strip the extension to match our .mdx files
+    const last = segments.length - 1;
+    segments[last] = segments[last].replace(/\.mdx?$/, '');
+    const docPath = segments.join('/');
+
+    // Every segment must be a plain name, so the path can't escape dist/
+    if (![tenant, version, ...segments].every(isSafeSegment)) {
+        res.status(400).json({ error: "Invalid document path.", requestedPath: docPath });
+        return null;
     }
-    
-    // Construct the absolute path. We enforce the .mdx extension here!
-    const absolutePath = path.resolve(__dirname, '..', 'dist', req.params.tenant, req.params.version, `${docPath}.mdx`);
 
-    if (fs.existsSync(absolutePath)) {
-        res.type('text/markdown').sendFile(absolutePath);
-    } else {
+    const absolutePath = path.join(DIST_DIR, tenant, version, ...segments) + extension;
+    if (!fs.existsSync(absolutePath)) {
         res.status(404).json({
             error: "Document Not Found",
             message: `The documentation page '${docPath}' could not be found. Check docs.json for typos.`,
             requestedPath: docPath
         });
+        return null;
     }
+    return absolutePath;
+}
+
+// Raw MDX, for AI agents and llms.txt readers.
+app.get('/api/docs/:tenant/:version/*docPath', (req, res) => {
+    const file = resolveDistPage(req, res, '.mdx');
+    if (file) res.type('text/markdown').sendFile(file);
+});
+
+// The compiled, code-free page the docs viewer renders (see backend/mdx/safeMdx.js).
+app.get('/api/page/:tenant/:version/*docPath', (req, res) => {
+    // Sites built before pages were pre-compiled only have the .mdx: compile it now and
+    // save the result, so they keep working without a rebuild.
+    const mdxFile = resolveDistPage(req, res, '.mdx');
+    if (!mdxFile) return;
+    const pageFile = mdxFile.replace(/\.mdx$/, '.page.json');
+    if (!fs.existsSync(pageFile)) {
+        const source = fs.readFileSync(mdxFile, 'utf8');
+        const compiled = compileSafeMdx(source);
+        const title = (source.match(/^#\s+(.+)$/m) || [])[1] || path.basename(mdxFile, '.mdx');
+        fs.writeFileSync(pageFile, JSON.stringify(compiled.ok ? { title, tree: compiled.tree } : { title, error: compiled.error }));
+    }
+    res.type('application/json').sendFile(pageFile);
 });
 
 app.use('/api/public', publicRoutes);
 app.use('/api/mcp', mcpRoutes);
+// Bring-your-own AI keys (requireAuth is a hoisted function declaration below)
+app.use('/api/ai', createAiRouter({ requireAuth, csrfProtection }));
 
-// --- SECURITY: LAYER 3 XSS PREVENTION (Input Sanitization) ---
-function sanitizeString(input, maxLength = 100) {
-    if (!input || typeof input !== 'string') return '';
-    return validator.escape(input.trim()).slice(0, maxLength);
+// --- SECURITY: Input validation for names that become folder names ---
+// Returns the trimmed name if it is a safe path segment, otherwise ''.
+function readName(input) {
+    if (typeof input !== 'string') return '';
+    const name = input.trim();
+    return isSafeSegment(name) ? name : '';
 }
 
 // --- SECURITY: RBAC MIDDLEWARE (Authentication & Roles) ---
@@ -240,19 +290,25 @@ function requireRole(...allowedRoles) {
 
         const { data: project } = await supabase
             .from('projects')
-            .select('id')
+            .select('id, user_id')
             .eq('tenant_name', tenantName)
             .eq('project_name', projectName)
-            .single();
+            .maybeSingle();
 
         if (!project) return res.status(404).json({ error: 'Project not found' });
+
+        // The project owner is always an admin, even if no membership row exists yet.
+        if (project.user_id === req.user.id) {
+            req.userRole = 'admin';
+            return next();
+        }
 
         const { data: member } = await supabase
             .from('project_members')
             .select('role')
             .eq('project_id', project.id)
             .eq('user_id', req.user.id)
-            .single();
+            .maybeSingle();
 
         if (!member || !allowedRoles.includes(member.role)) {
             return res.status(403).json({ error: 'Insufficient permissions' });
@@ -287,16 +343,16 @@ const PLAN_LIMITS = {
 
 async function checkGenerationLimit(req, res, next) {
   const { data: user } = await supabase
-    .from('users').select('plan, plan_status').eq('id', req.user.id).single();
+    .from('users').select('plan, plan_status').eq('id', req.user.id).maybeSingle();
 
   // If a Pro user's payment fails (halted), we treat them as a Free user
-  const plan   = user.plan_status === 'active' ? user.plan : 'free';
+  const plan   = user?.plan_status === 'active' ? user.plan : 'free';
   const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
   const month  = new Date().toISOString().slice(0, 7); // Gets 'YYYY-MM'
 
   const { data: usage } = await supabase
     .from('usage_tracking').select('generations')
-    .eq('user_id', req.user.id).eq('month', month).single();
+    .eq('user_id', req.user.id).eq('month', month).maybeSingle();
 
   if ((usage?.generations || 0) >= limits.maxGenerations) {
     return res.status(403).json({
@@ -313,8 +369,8 @@ async function checkGenerationLimit(req, res, next) {
 
 async function checkProjectLimit(req, res, next) {
   const { data: user } = await supabase
-    .from('users').select('plan').eq('id', req.user.id).single();
-  const limits = PLAN_LIMITS[user?.plan || 'free'];
+    .from('users').select('plan').eq('id', req.user.id).maybeSingle();
+  const limits = PLAN_LIMITS[user?.plan] || PLAN_LIMITS.free;
 
   if (limits.maxProjects === Infinity) return next();
 
@@ -322,7 +378,17 @@ async function checkProjectLimit(req, res, next) {
     .select('id', { count: 'exact', head: true })
     .eq('user_id', req.user.id);
 
-  if (count >= limits.maxProjects) {
+  // The dashboard creates the project row before calling /api/github,
+  // so a project that already exists for this user is included in the count.
+  const { data: current } = await supabase.from('projects')
+    .select('id')
+    .eq('user_id', req.user.id)
+    .eq('tenant_name', req.body.tenantName || '')
+    .eq('project_name', req.body.projectName || '')
+    .maybeSingle();
+  const overLimit = current ? count > limits.maxProjects : count >= limits.maxProjects;
+
+  if (overLimit) {
     return res.status(403).json({
       error:           'Project limit reached. Please upgrade to Pro.',
       limit:           limits.maxProjects,
@@ -332,13 +398,20 @@ async function checkProjectLimit(req, res, next) {
   next();
 }
 
-app.get("/", (req, res) => {
+app.get("/api/health", (req, res) => res.json({ ok: true }));
+
+// When this server also serves the app, "/" is the app's landing page.
+if (!config.frontend.serve) app.get("/", (req, res) => {
     res.send("Docs API is running smoothly!");
 });
 
 // --- RAZORPAY BILLING ROUTES ---
 
 app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async (req, res) => {
+  if (!razorpay) {
+    return res.status(503).json({ error: 'Billing is not enabled on this server.' });
+  }
+
   try {
     const user = req.user;
 
@@ -347,21 +420,21 @@ app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async 
       .from('users')
       .select('razorpay_customer_id, plan, email, full_name')
       .eq('id', user.id)
-      .single();
+      .maybeSingle();
 
-    if (userData.plan === 'pro') {
+    if (userData?.plan === 'pro') {
       return res.status(400).json({ error: 'Already on Pro plan' });
     }
 
     // 2. Create the Razorpay Subscription
     const subscription = await razorpay.subscriptions.create({
-      plan_id: process.env.RAZORPAY_PRO_PLAN_ID,
+      plan_id: config.razorpay.proPlanId,
       total_count: 120, // 120 months = 10 years (effectively unlimited)
       quantity: 1,
       customer_notify: 1, // Razorpay sends payment reminder emails automatically
       notes: {
         supabase_user_id: user.id,
-        user_email: userData.email,
+        user_email: userData?.email || user.email,
       },
     });
 
@@ -373,7 +446,7 @@ app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async 
     // 4. Return the subscription ID so the frontend can open the Razorpay popup
     res.json({
       subscriptionId: subscription.id,
-      keyId: process.env.RAZORPAY_KEY_ID,
+      keyId: config.razorpay.keyId,
     });
 
   } catch (error) {
@@ -382,277 +455,270 @@ app.post('/api/billing/create-subscription', csrfProtection, requireAuth, async 
   }
 });
 
-// Webhook stays public so GitHub can ping it without a login token
-app.post("/api/webhook", async (req, res) => {
-    const payload = req.body;
+// GitHub push webhook: regenerates docs for changed files with the project owner's AI key.
+// GitHub push webhook. There's no login token, so every delivery must be signed with the
+// webhook secret of the project it's for (Settings → Integrations); otherwise anyone could
+// trigger generation and spend the owner's AI credits. Each project has its own secret, so
+// one user can't sign pushes for another user's project.
+const webhookLimit = createRateLimiter({ windowMs: 60 * 1000, max: 60, key: (req) => req.ip });
+app.post("/api/webhook", webhookLimit, async (req, res) => {
+    if (!config.byok.enabled) {
+        return res.status(503).json({ message: "GitHub webhooks need AI_KEY_ENCRYPTION_KEY to be set on this server." });
+    }
+    if (!Buffer.isBuffer(req.body)) {
+        return res.status(400).json({ message: "Expected a JSON body (content type application/json)." });
+    }
+
+    // Read which repository the delivery claims to be for, then check the signature with
+    // that project's secret. Nothing in the payload is trusted until the signature matches.
+    let payload;
+    try {
+        payload = JSON.parse(req.body.toString('utf8'));
+    } catch {
+        return res.status(400).json({ message: "Invalid JSON payload." });
+    }
+    const projectName = readName(payload?.repository?.name);
+    const tenantName = readName(payload?.repository?.owner?.login);
+    const { data: project } = tenantName && projectName
+        ? await supabase.from('projects').select('id, user_id').eq('tenant_name', tenantName).eq('project_name', projectName).maybeSingle()
+        : { data: null };
+    const secret = project ? await getWebhookSecret(project.id) : null;
+    if (!hasValidSignature(req.body, req.headers['x-hub-signature-256'], secret)) {
+        // Same answer whether the project is unknown or the signature is wrong.
+        return res.status(401).json({ message: "Invalid or missing GitHub signature." });
+    }
 
     if (req.headers['x-github-event'] === 'ping') {
-        console.log("👋 [Webhook] Received GitHub ping. The tunnel is perfectly connected!");
-        return res.status(200).json({ message: "Pong! Connection successful." });
+        return res.status(200).json({ message: "Pong! The webhook is connected." });
+    }
+    if (!Array.isArray(payload.commits)) {
+        return res.status(400).json({ message: "Not a valid push event." });
     }
 
-    if (!payload.commits || !payload.repository) {
-        return res.status(400).json({ message: "Not a valid push event." })
-    }
+    const repoUrl = `https://github.com/${tenantName}/${projectName}`;
 
-    const repoUrl = payload.repository.clone_url;
-    const projectName = payload.repository.name;
-    const tenantName = payload.repository.owner.login;
-
-    let changedFiles = [];
+    const changedFiles = [];
     for (const commit of payload.commits) {
-        if (commit.added) changedFiles.push(...commit.added);
-        if(commit.modified) changedFiles.push(...commit.modified);
+        if (Array.isArray(commit.added)) changedFiles.push(...commit.added);
+        if (Array.isArray(commit.modified)) changedFiles.push(...commit.modified);
     }
+    const filesToProcess = filterChangedFiles(changedFiles);
+    // A changed OpenAPI spec refreshes the API reference (no AI needed).
+    const refreshApiReference = changedFiles.some((file) => typeof file === 'string' && isSpecFileName(file));
 
-    changedFiles = [...new Set(changedFiles)];
-
-    const vaildExtensions = [".js", ".ts", ".py", ".go"];
-    const filesToProcess = changedFiles.filter(file => {
-        const ext = path.extname(file);
-        return vaildExtensions.includes(ext);
-    });
-
-    if (filesToProcess.length === 0) {
+    if (filesToProcess.length === 0 && !refreshApiReference) {
         console.log("[webhook] No relevant code files changed. Skipping AI generation.");
         return res.status(200).json({ message: "No relevant files changed." });
     }
 
-    try {
-        console.log(`\n [Webhook] Detected changes in ${filesToProcess.length} files. Starting targeted update...`);
-
-        const downloadedFolderPath = await cloneRepo(repoUrl, projectName);
-
-        const targetDir = path.join(__dirname, "../docs", tenantName, projectName);
-        if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
-        }
-
-        let generatedCount = 0;
-        let updatedRoutes = []; // <-- NEW: Array to hold the changed files
-
-        for (const relativeFilePath of filesToProcess) {
-            const fullPath = path.join(downloadedFolderPath, relativeFilePath);
-
-            if (fs.existsSync(fullPath)) {
-                const content = fs.readFileSync(fullPath, "utf-8");
-                const fileObj = { path: fullPath, code: content };
-                
-                const codeMap = analyzeRepo(downloadedFolderPath);
-                const markdownOutput = await generateDocs(fileObj, codeMap);
-
-                if (markdownOutput) {
-                   const parsedPath = path.parse(relativeFilePath);
-                   const nestedTargetDir = path.join(targetDir, parsedPath.dir);
-                   
-                   if (!fs.existsSync(nestedTargetDir)) {
-                    fs.mkdirSync(nestedTargetDir, { recursive: true });
-                   }
-
-                   const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
-                   fs.writeFileSync(mdFilePath, markdownOutput);
-
-                   // --- NEW: Format the exact route build.js expects ---
-                   const routeString = `${tenantName}/${projectName}/${parsedPath.dir ? parsedPath.dir + '/' : ''}${parsedPath.name}`.replace(/\\/g, "/");
-                   updatedRoutes.push(routeString);
-
-                   console.log(`[Webhook] Updated AI Doc: ${mdFilePath}`);
-                   generatedCount++;
-                }
-            }
-        }
-
-        console.log("[webhook] Waking up the factory Worker...");
-        
-        // Respond IMMEDIATELY to prevent GitHub webhook timeout
-        res.status(200).json({ message: `Successfully updated ${generatedCount} files. Build running in background.` });
-
-        const buildScriptPath = path.join(__dirname, "../build/build.js");
-
-        // --- UPDATED: Pass the array of changed routes to the worker! ---
-        const buildProcess = spawn("node", [buildScriptPath, "--webhook", ...updatedRoutes]);
-        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
-        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
-
-        buildProcess.on("close", (code) => {
-            if (code !== 0) {
-                console.error("Webhook Build failed with code:", code);
-            } else {
-                console.log("Targeted webhook update complete!");
-            }
-        });
-
-    } catch (error) {
-        console.error("Webhook Error:", error);
-        if (!res.headersSent) {
-            res.status(500).json({ error: "Failed to process webhooks." });
-        }
+    // Updates are written with the project owner's own AI key.
+    if (!project.user_id) {
+        return res.status(200).json({ message: "No project owner to write docs for. Skipping." });
     }
+
+    let llm;
+    try {
+        llm = await getUserLLM(project.user_id);
+    } catch (error) {
+        const ai = describeAiError(error);
+        if (!ai) throw error;
+        console.log(`[Webhook] Skipping ${tenantName}/${projectName}: ${ai.message}`);
+        return res.status(200).json({ message: `Skipped: ${ai.message}` });
+    }
+
+    // GitHub gives up after 10 seconds, so queue the update and answer at once.
+    const { jobId, merged, skipped } = await enqueueWebhookUpdate({
+        projectId: project.id,
+        payload: { repoUrl, tenantName, projectName, userId: project.user_id, files: filesToProcess, refreshApiReference },
+        provider: llm.provider,
+        model: llm.writerModel,
+    });
+    const message = skipped
+        ? "A full regeneration is already queued; it will include these changes."
+        : merged
+            ? `Added ${filesToProcess.length} changed files to the update already queued.`
+            : `Queued a docs update for ${filesToProcess.length} changed files.`;
+    console.log(`[Webhook] ${tenantName}/${projectName}: ${message}`);
+    res.status(202).json({ message, jobId });
 });
 
 // NEW: Require Admin or Editor to generate docs from GitHub
 app.post("/api/github", csrfProtection, requireAuth, requireRole('admin', 'editor'), checkProjectLimit, checkGenerationLimit, async (req, res) => {
     const repoUrl = req.body.repoUrl; 
-    const projectName = sanitizeString(req.body.projectName, 64);
-    const tenantName  = sanitizeString(req.body.tenantName, 64);
+    const projectName = readName(req.body.projectName);
+    const tenantName  = readName(req.body.tenantName);
 
     if (!repoUrl || !projectName || !tenantName) {
-        return res.status(400).json({ error: "Missing repoUrl, projectName, or tenantName" });
+        return res.status(400).json({ error: "Missing or invalid repoUrl, projectName, or tenantName" });
     }
 
+    const repo = parseGithubRepoUrl(repoUrl);
+    if (!repo) {
+        return res.status(400).json({ error: "Repository URL must look like https://github.com/<owner>/<repo>." });
+    }
+    // The docs at /docs/<owner>/<repo> may only be written from that repository.
+    if (repo.owner.toLowerCase() !== tenantName.toLowerCase() || repo.repo.toLowerCase() !== projectName.toLowerCase()) {
+        return res.status(400).json({ error: `This project can only be generated from https://github.com/${tenantName}/${projectName}.` });
+    }
+
+    const { data: project } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('tenant_name', tenantName)
+        .eq('project_name', projectName)
+        .maybeSingle();
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    // Docs are written with the AI key of whoever starts the run. Check it now so a missing
+    // key is reported straight away instead of as a failed job.
+    let llm;
     try {
-        await supabase
-            .from('projects')
-            .update({ status: 'running' })
-            .eq('tenant_name', tenantName)
-            .eq('project_name', projectName);
+        llm = await getUserLLM(req.user.id);
+    } catch (error) {
+        const ai = describeAiError(error);
+        if (!ai) throw error;
+        await supabase.from('projects').update({ status: 'failed' }).eq('id', project.id).in('status', ['pending', 'running']);
+        return res.status(ai.status).json({ error: ai.message, code: ai.code });
+    }
 
-        console.log(`\n [GitHub API] Starting pipeline for ${repoUrl}...`);
-        const downloadedFolderPath = await cloneRepo(repoUrl, projectName);
+    await supabase.from('projects').update({ repo_url: repoUrl }).eq('id', project.id);
+    const { jobId, duplicate } = await enqueueJob({
+        projectId: project.id,
+        eventType: 'generation',
+        triggeredBy: 'dashboard',
+        payload: { repoUrl, tenantName, projectName, userId: req.user.id },
+        provider: llm.provider,
+        model: llm.writerModel,
+    });
 
-        console.log(`[GitHub API] Analyzing repository architecture...`);
-        const codeMap = analyzeRepo(downloadedFolderPath);
-        console.log(`[GitHub API] Code Map generated successfully.`);
+    if (duplicate) {
+        return res.status(409).json({ error: "A generation for this project is already waiting to start.", code: 'already_queued', jobId });
+    }
+    res.status(202).json({ message: "Generation queued.", jobId, tenant: tenantName, version: projectName });
+});
 
-        // NEW: Expanded scanner returns both code files AND context files
-        const { codeFiles: foundFiles, contextFiles } = scanCodeFiles(downloadedFolderPath);
-        console.log(`[GitHub API] Inspector found ${foundFiles.length} code files + ${contextFiles.length} context files.`);
-
-        if (foundFiles.length === 0 && contextFiles.length === 0) {
-            await supabase
-                .from('projects')
-                .update({ status: 'failed' })
-                .eq('tenant_name', tenantName)
-                .eq('project_name', projectName);
-            return res.status(404).json({ error: "No valid code files found in this repository." });
+// --- GitHub webhook secret (project admins) ---
+// Shown in Settings → Integrations, to paste into the repository's webhook on GitHub.
+async function loadProjectForAdmin(req, res, { needsEncryption = true, what = "the webhook secret" } = {}) {
+    const { data: project } = await supabase.from('projects').select('id, user_id').eq('id', req.params.id).maybeSingle()
+        .then((r) => r, () => ({ data: null }));
+    if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return null;
+    }
+    if (project.user_id !== req.user.id) {
+        const { data: member } = await supabase.from('project_members').select('role')
+            .eq('project_id', project.id).eq('user_id', req.user.id).maybeSingle();
+        if (!member) {
+            res.status(404).json({ error: 'Project not found' });
+            return null;
         }
-
-        const targetDir = path.join(__dirname, "../docs", tenantName, projectName);
-        if (!fs.existsSync(targetDir)) {
-            fs.mkdirSync(targetDir, { recursive: true });
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // PHASE 1: SUPER-ARCHITECT — Design the entire doc site
-        // ═══════════════════════════════════════════════════════════
-        console.log(`\n[GitHub API] 🏗️  Triggering Super-Architect Phase...`);
-        const blueprint = await generateArchitectBlueprint(foundFiles, contextFiles, projectName);
-
-        // Build the docs.json from the Architect's page plan
-        const docsJsonPath = path.join(targetDir, "docs.json");
-        let siteConfig = {};
-
-        // Non-Destructive Merge: preserve existing user branding
-        if (fs.existsSync(docsJsonPath)) {
-            try {
-                siteConfig = JSON.parse(fs.readFileSync(docsJsonPath, 'utf8'));
-                console.log(`[GitHub API] Found existing config. Preserving user branding.`);
-            } catch (e) {
-                console.log(`[GitHub API] Failed to parse existing config, creating fresh.`);
-            }
-        } else {
-            console.log(`[GitHub API] Creating fresh docs.json template.`);
-            siteConfig = {
-                "$schema": "https://mintlify.com/docs.json",
-                "name": blueprint.projectName || projectName.charAt(0).toUpperCase() + projectName.slice(1),
-                "logo": { "light": "/logo/light.svg", "dark": "/logo/dark.svg" },
-                "theme": "mint",
-                "colors": { "primary": "#3b82f6", "light": "#ffffff", "dark": "#000000" }
-            };
-        }
-
-        // Convert the Architect's page plan into Mintlify navigation format
-        const groupMap = {};
-        for (const page of blueprint.pages) {
-            if (!groupMap[page.group]) groupMap[page.group] = [];
-            groupMap[page.group].push(page.slug);
-        }
-        siteConfig.navigation = Object.entries(groupMap).map(([group, pages]) => ({
-            group,
-            pages
-        }));
-
-        fs.writeFileSync(docsJsonPath, JSON.stringify(siteConfig, null, 2));
-        console.log(`[GitHub API] ✅ Architect Blueprint saved with ${blueprint.pages.length} pages.`);
-
-        // ═══════════════════════════════════════════════════════════
-        // PHASE 2: GHOSTWRITER — Write each page from the plan
-        // ═══════════════════════════════════════════════════════════
-        let generatedCount = 0;
-
-        for (const pagePlan of blueprint.pages) {
-            await new Promise(resolve => setTimeout(resolve, 3000)); // Rate limiting
-
-            const markdownOutput = await generatePage(pagePlan, foundFiles, contextFiles, blueprint);
-
-            if (markdownOutput) {
-                const mdFilePath = path.join(targetDir, `${pagePlan.slug}.mdx`);
-                fs.writeFileSync(mdFilePath, markdownOutput);
-                console.log(`📄 Saved: ${pagePlan.title} → ${mdFilePath}`);
-                generatedCount++;
-            }
-        }
-
-        console.log("[GitHub API] Waking up the Factory Worker (build.js)...");
-
-        // Increment Generation Count
-        await supabase.rpc('increment_usage', {
-            p_user_id: req.user.id,
-            p_month: new Date().toISOString().slice(0, 7),
-            p_field: 'generations'
-        });
-        
-        res.json({
-            message: "GitHub Repository successfully converted into documentation! Build compiling in background.",
-            fileProcessed: generatedCount,
-            tenant: tenantName,
-            version: projectName
-        });
-
-        const buildScriptPath = path.join(__dirname, "../build/build.js");
-        const buildProcess = spawn("node", [buildScriptPath, "--scope", `${tenantName}/${projectName}`]);
-
-        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
-        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
-
-        buildProcess.on("close", async (code) => {
-            if (code !== 0) {
-                console.error("Factory Build failed with code:", code);
-                await supabase
-                    .from('projects')
-                    .update({ status: 'failed' })
-                    .eq('tenant_name', tenantName)
-                    .eq('project_name', projectName);
-            } else {
-                console.log("Factory Worker finished successfully!");
-                await supabase
-                    .from('projects')
-                    .update({ status: 'successful' })
-                    .eq('tenant_name', tenantName)
-                    .eq('project_name', projectName);
-            }
-        });
-
-    } catch (error) { 
-        console.error("GitHub API Error", error);
-        await supabase
-            .from('projects')
-            .update({ status: 'failed' })
-            .eq('tenant_name', tenantName)
-            .eq('project_name', projectName);
-            
-        if (!res.headersSent) {
-            res.status(500).json({ error: "Failed to process the GitHub repository." });
+        if (member.role !== 'admin') {
+            res.status(403).json({ error: `Only project admins can manage ${what}.` });
+            return null;
         }
     }
+    if (needsEncryption && !config.byok.enabled) {
+        res.status(503).json({ error: "Webhooks need AI_KEY_ENCRYPTION_KEY to be set on this server." });
+        return null;
+    }
+    return project;
+}
+
+// --- Custom domain (project admins) ---
+// A domain serves the docs only after its DNS TXT record proves ownership.
+const domainAdmin = { needsEncryption: false, what: "the custom domain" };
+async function domainRoute(res, work) {
+    try {
+        res.json(await work());
+    } catch (error) {
+        if (error instanceof customDomains.DomainError) return res.status(error.status).json({ error: error.message });
+        throw error;
+    }
+}
+
+app.get('/api/projects/:id/domain', requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, async () => customDomains.status(await customDomains.getProject(project.id)));
+});
+
+app.put('/api/projects/:id/domain', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.setDomain(project.id, req.body?.domain, { appHostnames: config.appHostnames }));
+});
+
+app.delete('/api/projects/:id/domain', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.removeDomain(project.id));
+});
+
+const verifyLimit = createRateLimiter({ windowMs: 60 * 1000, max: 10, key: (req) => req.user?.id || req.ip });
+app.post('/api/projects/:id/domain/verify', csrfProtection, requireAuth, verifyLimit, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res, domainAdmin);
+    if (project) await domainRoute(res, () => customDomains.verifyDomain(project.id));
+});
+
+app.get('/api/projects/:id/webhook', requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res);
+    if (project) res.json({ secret: await getOrCreateWebhookSecret(project.id) });
+});
+
+app.post('/api/projects/:id/webhook/rotate', csrfProtection, requireAuth, async (req, res) => {
+    const project = await loadProjectForAdmin(req, res);
+    if (project) res.json({ secret: await rotateWebhookSecret(project.id) });
+});
+
+// --- Job status and cancellation (members of the job's project) ---
+async function loadJobForMember(req, res, allowedRoles) {
+    const job = await getJob(req.params.id);
+    if (!job) {
+        res.status(404).json({ error: 'Job not found' });
+        return null;
+    }
+    const { data: project } = await supabase.from('projects').select('user_id').eq('id', job.project_id).maybeSingle();
+    let role = project?.user_id === req.user.id ? 'admin' : null;
+    if (!role) {
+        const { data: member } = await supabase
+            .from('project_members')
+            .select('role')
+            .eq('project_id', job.project_id)
+            .eq('user_id', req.user.id)
+            .maybeSingle();
+        role = member?.role || null;
+    }
+    if (!role) {
+        res.status(404).json({ error: 'Job not found' });
+        return null;
+    }
+    if (!allowedRoles.includes(role)) {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return null;
+    }
+    return job;
+}
+
+app.get('/api/jobs/:id', requireAuth, async (req, res) => {
+    const job = await loadJobForMember(req, res, ['admin', 'editor', 'viewer']);
+    if (job) res.json({ job });
+});
+
+app.post('/api/jobs/:id/cancel', csrfProtection, requireAuth, async (req, res) => {
+    const job = await loadJobForMember(req, res, ['admin', 'editor']);
+    if (!job) return;
+    if (!['queued', 'running'].includes(job.status)) {
+        return res.status(409).json({ error: `This job has already ${job.status === 'successful' ? 'finished' : job.status === 'cancelled' ? 'been cancelled' : 'failed'}.`, job });
+    }
+    res.json({ job: await cancelJob(job.id) });
 });
 
 // --- NEW: Two-Way GitHub Sync Route ---
-app.post("/api/github/save-config", csrfProtection, requireAuth, async (req, res) => {
+app.post("/api/github/save-config", csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     // We expect the frontend to pass the config object and the user's GitHub provider token
-    const { tenant, version, configData, githubToken } = req.body;
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+    const { configData, githubToken } = req.body;
 
-    if (!tenant || !version || !configData || !githubToken) {
+    if (!tenant || !version || !configData || typeof configData !== 'object' || typeof githubToken !== 'string' || !githubToken) {
         return res.status(400).json({ error: "Missing required sync data." });
     }
 
@@ -703,20 +769,38 @@ app.post("/api/github/save-config", csrfProtection, requireAuth, async (req, res
 
     } catch (error) {
         console.error("❌ GitHub Sync Error:", error);
-        res.status(500).json({ error: error.message });
+        res.status(502).json({ error: `GitHub refused the update: ${String(error.message).slice(0, 200)}` });
     }
 });
 
 // NEW: Require Admin to save settings
 // NEW: Require Admin to save settings & navigation
 app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
-    const tenant = sanitizeString(req.body.tenant, 64);
-    const version = sanitizeString(req.body.version, 64);
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+
+    if (!tenant || !version) {
+        return res.status(400).json({ error: 'Invalid project' });
+    }
     
     // We now accept 'navigation' from the frontend!
     const { primaryColor, logoUrl, fontFamily, darkMode, navigation } = req.body;
 
-    const configPath = path.join(__dirname, '../docs', tenant, version, 'docgen.json');
+    // These end up in the published site's CSS and <img> tags: only plain values.
+    if (primaryColor !== undefined && primaryColor !== '' && !/^#[0-9a-f]{3,8}$/i.test(String(primaryColor))) {
+        return res.status(400).json({ error: 'The primary color must be a hex color like #3b82f6.' });
+    }
+    if (logoUrl !== undefined && logoUrl !== '' && !/^(https:\/\/|\/(?!\/))[^\s"'<>()\\]*$/i.test(String(logoUrl))) {
+        return res.status(400).json({ error: 'The logo must be an https:// URL or a path on your docs site.' });
+    }
+    if (fontFamily !== undefined && fontFamily !== '' && !/^[\w \-,'"]{1,100}$/.test(String(fontFamily))) {
+        return res.status(400).json({ error: 'Invalid font family.' });
+    }
+    if (navigation !== undefined && (!Array.isArray(navigation) || JSON.stringify(navigation).length > 100000)) {
+        return res.status(400).json({ error: 'Invalid navigation.' });
+    }
+
+    const configPath = path.join(DOCS_DIR, tenant, version, 'docgen.json');
     const configDir  = path.dirname(configPath);
 
     if (!fs.existsSync(configDir)) {
@@ -749,31 +833,29 @@ app.post('/api/settings', csrfProtection, requireAuth, requireRole('admin'), asy
 
     res.json({ message: 'Settings saved. Rebuilding site in background...' });
 
-    // --- UPDATED: Pass the --scope argument to the worker! ---
-    const buildScriptPath = path.join(__dirname, '../build/build.js');
-    const targetScope = `${tenant}/${version}`;
-    
-    console.log(`[Settings] Waking up worker for specific scope: ${targetScope}`);
-    const buildProcess = spawn("node", [buildScriptPath, "--scope", targetScope]);
-    
-    buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
-    buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
+    console.log(`[Settings] Waking up worker for specific scope: ${tenant}/${version}`);
+    buildProject(tenant, version)
+        .catch((err) => console.error("Settings rebuild failed:", err.message));
 });
 
 // NEW: Require Admin to delete projects
 app.delete('/api/projects/:tenant/:version', csrfProtection, requireAuth, requireRole('admin'), async (req, res) => {
     const { tenant, version } = req.params;
 
+    if (!isSafeSegment(tenant) || !isSafeSegment(version)) {
+        return res.status(400).json({ error: 'Invalid project' });
+    }
+
     const { error: supaErr } = await supabase
-        .from('doc_vectors')
+        .from('doc_chunks')
         .delete()
         .eq('tenant', tenant)
         .eq('version', version);
         
-    if (supaErr) return res.status(500).json({ error: 'Failed to delete vectors' });
+    if (supaErr) return res.status(500).json({ error: 'Failed to delete search index' });
 
-    const docsDir = path.join(__dirname, '../docs', tenant, version);
-    const distDir = path.join(__dirname, '../dist', tenant, version);
+    const docsDir = path.join(DOCS_DIR, tenant, version);
+    const distDir = path.join(DIST_DIR, tenant, version);
 
     if (fs.existsSync(docsDir)) fs.rmSync(docsDir, { recursive: true, force: true });
     if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
@@ -783,22 +865,30 @@ app.delete('/api/projects/:tenant/:version', csrfProtection, requireAuth, requir
 
 // NEW: Require Admin or Editor to save a doc file manually
 app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'), (req, res) => {
-    const tenant = sanitizeString(req.body.tenant, 64);
-    const version = sanitizeString(req.body.version, 64);
-    const fileName = sanitizeString(req.body.fileName, 100);
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+    const fileName = readName(req.body.fileName);
     const content = req.body.content; 
 
-    if (!tenant || !version || !fileName || !content) {
-        return res.status(400).json({ error: "Missing required fields" });
+    if (!tenant || !version || !fileName || typeof content !== 'string' || !content) {
+        return res.status(400).json({ error: "Missing or invalid required fields" });
     }
 
-    const targetDir = path.join(__dirname, "../docs", tenant,version);
+    // Don't publish a page the viewer can't render.
+    const compiled = compileSafeMdx(content);
+    if (!compiled.ok) {
+        const { message, line, column } = compiled.error;
+        return res.status(400).json({ error: `This page has a syntax error${line ? ` on line ${line}` : ''}: ${message}`, line, column });
+    }
+
+    const targetDir = path.join(DOCS_DIR, tenant, version);
 
     if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
     }
 
-    const filePath = path.join(targetDir, `${fileName}.md`);
+    // The docs viewer serves .mdx files, so save with that extension.
+    const filePath = path.join(targetDir, `${fileName}.mdx`);
 
     try {
         fs.writeFileSync(filePath, content);
@@ -811,21 +901,9 @@ app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'
             fileName
         });
 
-        const buildScriptPath = path.join(__dirname, "../build/build.js");
-        const targetRoute = `${tenant}/${version}/${fileName}`;
-
-        const buildProcess = spawn("node", [buildScriptPath, targetRoute]);
-
-        buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
-        buildProcess.stderr.on("data", (data) => process.stderr.write(`[Worker Error] ${data}`));
-        
-        buildProcess.on("close", (code) => {
-             if (code !== 0) {
-                 console.error(`Build failed for ${fileName} with code ${code}`);
-             } else {
-                 console.log(`Engine successfully rebuilt for ${fileName}!`);
-             }
-        });
+        buildProject(tenant, version)
+            .then(() => console.log(`Engine successfully rebuilt for ${fileName}!`))
+            .catch((err) => console.error(`Build failed for ${fileName}:`, err.message));
 
     } catch (err) {
         console.error("Error saving file:", err);
@@ -835,126 +913,149 @@ app.post("/api/docs", csrfProtection, requireAuth, requireRole('admin', 'editor'
     }
 });
 
-app.post("/api/proxy", async (req, res) => {
-    const { targetUrl, targetMethod, payload } = req.body;
-
-    if (!targetUrl || !targetMethod) {
-        return res.status(400).json({ error: "Missing targetUrl or targetMethod." });
-    }
-
+// "Try it" requests from the docs API playground. Public APIs only: see services/apiProxy.js.
+const proxyLimit = createRateLimiter({ windowMs: 60 * 1000, max: 30, key: (req) => req.ip });
+app.post("/api/proxy", proxyLimit, async (req, res) => {
     try {
-        console.log(`\n🔌 [Proxy] Forwarding ${targetMethod} request to: ${targetUrl}`);
-        
-        const fetchOptions = {
-            method: targetMethod,
-            headers: {
-                "Content-Type": "application/json",
-            }
-        };
-
-        if (payload && targetMethod !== "GET" && targetMethod !== "DELETE") {
-            fetchOptions.body = JSON.stringify(payload);
-        }
-
-        const externalResponse = await fetch(targetUrl, fetchOptions);
-        const data = await externalResponse.json().catch(() => ({}));
-
-        res.status(externalResponse.status).json({
-            status: externalResponse.status,
-            data: data
-        });
-
+        const result = await proxyRequest(req.body || {}, { allowPrivate: config.apiPlayground.allowPrivate });
+        res.status(200).json(result);
     } catch (error) {
-        console.error("❌ [Proxy] Request failed:", error.message);
-        res.status(500).json({ 
-            error: "Failed to reach the target URL.", 
-            details: error.message 
-        });
+        if (error instanceof ProxyError) return res.status(error.status).json({ error: error.message });
+        console.error("[Proxy] Unexpected error:", error);
+        res.status(500).json({ error: "The request failed." });
     }
 });
 
+// Which site a custom domain shows (used by the docs app on that domain). Verified only.
 app.get("/api/domain/:customDomain", async (req, res) => {
-    const { customDomain } = req.params;
-
-    try {
-        const { data, error } = await supabase
-            .from('projects')
-            .select('tenant_name, project_name')
-            .eq('custom_domain', customDomain)
-            .single();
-
-        if (error || !data) {
-            console.log(`[Domain Routing] Unrecognized domain pinged: ${customDomain}`);
-            return res.status(404).json({ error: "Domain not linked to any project." });
-        }
-
-        console.log(`[Domain Routing] Matched ${customDomain} -> ${data.tenant_name}/${data.project_name}`);
-        
-        res.json({
-            tenant: data.tenant_name,
-            version: data.project_name
-        });
-
-    } catch (error) {
-        console.error("[Domain Routing] Server Error:", error);
-        res.status(500).json({ error: "Failed to verify domain." });
-    }
+    const site = await customDomains.findVerifiedDomain(String(req.params.customDomain).toLowerCase());
+    if (!site) return res.status(404).json({ error: "Domain not linked to any project." });
+    res.json({ tenant: site.tenant, version: site.project });
 });
 
-app.post("/api/ask", async (req, res) => {
+// --- Reader feedback: "Was this page helpful?" ---
+const feedbackLimitPerVisitor = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20, key: (req) => req.ip });
+const feedbackLimitPerSite = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 500, key: (req) => `${req.body?.tenant}/${req.body?.version}` });
+app.post("/api/feedback", feedbackLimitPerVisitor, feedbackLimitPerSite, async (req, res) => {
+    const tenant = readName(req.body?.tenant);
+    const version = readName(req.body?.version);
+    const route = typeof req.body?.route === 'string' ? req.body.route.trim().replace(/^\/+|\/+$/g, '') : '';
+    const helpful = req.body?.helpful;
+    const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim().slice(0, 1000) : '';
+    if (!tenant || !version || !route || typeof helpful !== 'boolean') {
+        return res.status(400).json({ error: "Missing tenant, version, route or helpful." });
+    }
+    // Only pages that are actually published.
+    const loaded = loadSite(tenant, version);
+    if (!loaded?.site.pages[route]) return res.status(404).json({ error: "This page doesn't exist." });
+
+    const { data: project } = await supabase.from('projects').select('id').eq('tenant_name', tenant).eq('project_name', version).maybeSingle();
+    if (!project) return res.status(404).json({ error: "These docs don't exist." });
+
+    const { error } = await supabase.from('page_feedback').insert({ project_id: project.id, route, helpful, comment: comment || null });
+    if (error) {
+        console.error("[Feedback] Couldn't save:", error.message);
+        return res.status(500).json({ error: "Couldn't save your feedback." });
+    }
+    res.status(201).json({ ok: true });
+});
+
+// --- ASK AI: answers readers' questions from the docs ---
+// Readers are anonymous, but every answer is paid for by the project owner's AI key,
+// so requests are limited per visitor and per docs site.
+const askLimitPerVisitor = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20, key: (req) => req.ip });
+const askLimitPerSite = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 200, key: (req) => `${req.body?.tenant}/${req.body?.version}` });
+const ASK_UNAVAILABLE = "Ask AI isn't set up for these docs yet.";
+
+app.post("/api/ask", askLimitPerVisitor, askLimitPerSite, async (req, res) => {
+    const question = typeof req.body.question === 'string' ? req.body.question.trim().slice(0, 1000) : '';
+    const tenant = readName(req.body.tenant);
+    const version = readName(req.body.version);
+
+    if (!question || !tenant || !version) {
+        return res.status(400).json({ error: "Missing question, tenant, or version." });
+    }
+
     try {
-        const { question, tenant, version } = req.body;
+        const { data: project } = await supabase
+            .from('projects')
+            .select('user_id')
+            .eq('tenant_name', tenant)
+            .eq('project_name', version)
+            .maybeSingle();
+        if (!project) return res.status(404).json({ error: "These docs don't exist." });
 
-        if (!question || !tenant || !version) {
-            return res.status(400).json({ error: "Missing question, tenant, or version." });
+        // The owner's AI answers; unclaimed preview sites use the server's preview AI, if any.
+        let llm = null;
+        if (project.user_id) {
+            try {
+                llm = await getUserLLM(project.user_id);
+            } catch (error) {
+                if (!describeAiError(error)) throw error;
+            }
+        } else {
+            llm = getPreviewLLM();
         }
+        if (!llm) return res.status(503).json({ error: ASK_UNAVAILABLE });
 
-        console.log(`\n Calculating math vector for question: "${question}"`);
-
-        const embedResult = await embeddingModel.embedContent(question);
-        const questionVector = embedResult.embedding.values;
-
-        const { data: topChunks, error: supabaseError } = await supabase.rpc('match_vectors', {
-            query_embedding: questionVector,
-            match_threshold: 0.1,
-            match_count: 3,
+        // Keyword search over the docs' sections.
+        const { data: chunks, error: searchError } = await supabase.rpc('search_doc_chunks', {
             search_tenant: tenant,
-            search_version: version
+            search_version: version,
+            query: question,
+            match_count: 5,
         });
-
-        if (supabaseError) {
-            console.error("Supabase Search Error:", supabaseError);
-            return res.status(500).json({ error: "Database search failed."});
+        if (searchError) {
+            console.error("Ask AI search error:", searchError);
+            return res.status(500).json({ error: "Search failed." });
         }
 
-        console.log("Top 3 Cloud Match Scores:");
-        topChunks.forEach((c, i) => console.log(` ${ i + 1}: Score ${c.similarity.toFixed(3)} -> ${c.text.substring(0,40)}...`));
+        // Nothing relevant: answer without spending the owner's AI credits.
+        if (!chunks || chunks.length === 0) {
+            return res.json({ answer: "I'm sorry, I cannot find the answer to that in the current documentation.", sources: [] });
+        }
 
-        const contextString = topChunks.map(c => c.text).join("\n\n");
+        const contextString = chunks.map((c) => `### ${c.title}\n(Page: ${c.route})\n${c.text}`).join("\n\n");
+        const answer = await askAI(question, contextString, llm);
 
-        console.log("Sending context to Gemini...");
-        const answer = await askAI(question, contextString);
+        if (project.user_id) {
+            supabase.rpc('increment_usage', { p_user_id: project.user_id, p_month: new Date().toISOString().slice(0, 7), p_field: 'ai_queries' })
+                .then(({ error }) => error && console.error("Ask AI usage count failed:", error.message));
+        }
 
-        res.json({ answer: answer });
+        res.json({ answer, sources: chunks.map((c) => ({ title: c.title, route: c.route })) });
 
     } catch (error) {
+        const ai = describeAiError(error);
+        if (ai) {
+            // Readers don't need the owner's provider details; the log keeps them.
+            console.error(`Ask AI provider error for ${tenant}/${version}: ${ai.code} ${ai.providerMessage || ai.message}`);
+            return res.status(502).json({ error: "Ask AI couldn't answer right now. Try again in a moment." });
+        }
         console.error("Ask API Error:", error);
         res.status(500).json({ error: "Internal server error." });
     }
-})
+});
+
+// --- The app itself (SERVE_FRONTEND=true): static files, then index.html for app routes ---
+if (config.frontend.serve) {
+    app.use(express.static(config.frontend.distDir, { index: false, maxAge: "1h" }));
+    const appCsp = pageCsp(config);
+    app.get("/*splat", (req, res, next) => {
+        if (req.path.startsWith("/api/")) return next();
+        res.set("Content-Security-Policy", appCsp);
+        res.sendFile(path.join(config.frontend.distDir, "index.html"), (err) => err && next());
+    });
+}
 
 // --- GLOBAL ERROR HANDLER ---
+// Answers in JSON and never sends stack traces or internal messages to the client.
 app.use((err, req, res, next) => {
-    // Catch CSRF token errors specifically
-    if (err.code === 'EBADCSRFTOKEN') {
-        console.error('🚫 CSRF Token missing or invalid for:', req.path);
-        return res.status(403).json({ 
-            error: 'Security token expired or invalid. Please refresh the page.' 
-        });
-    }
-    
-    // Pass any other errors down the line
-    next(err);
+    if (res.headersSent) return next(err);
+    // Errors from body parsing (malformed JSON, body too large) are the client's.
+    const status = err.status || err.statusCode || 500;
+    if (status >= 500) console.error(`[Server] ${req.method} ${req.path} failed:`, err);
+    res.status(status).json({ error: status < 500 && err.expose ? err.message : status < 500 ? 'Bad request.' : 'Internal server error.' });
 });
 
 // --- .WELL-KNOWN SKILL ROUTES (Public, for AI Agents) ---
@@ -994,9 +1095,14 @@ app.get('/llms.txt', (req, res) => {
     }
 });
 
-const PORT = 4000;
+const PORT = config.port;
+const worker = createWorker(config.jobs);
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    logOptionalFeatures();
+    if (config.jobs.concurrency > 0) worker.start();
+    else console.log('[Worker] WORKER_CONCURRENCY=0: this server runs no jobs. Start `npm run worker` to process them.');
 
     // Auto-regenerate skill.md on every server start
     try {
@@ -1006,3 +1112,16 @@ app.listen(PORT, () => {
         console.error('[Skill] Failed to auto-generate skill.md:', err.message);
     }
 });
+
+// On shutdown (deploy, restart, `node --watch` reload) hand running jobs back to the queue
+// so they start again right away instead of waiting to be detected as stalled.
+let shuttingDown = false;
+async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[Server] ${signal} received: handing running jobs back to the queue.`);
+    await worker.stop();
+    process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

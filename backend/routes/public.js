@@ -1,188 +1,181 @@
 const express = require("express");
-const path = require("path");
-const fs = require("fs");
-const { spawn } = require("child_process");
 const validator = require("validator");
-const { sendSuccessEmail } = require("../emailService");
+const supabase = require("../lib/supabase");
+const { getPreviewLLM } = require("../services/aiCredentials");
+const { enqueueJob, getJob } = require("../jobs/queue");
+const { isSafeSegment } = require("../lib/paths");
 
-// Notice the '../' because we are now inside the routes folder!
-const cloneRepo = require("../gitServices");
-const scanCodeFiles = require("../codeScanner");
-const generateDocs = require("../aiWriter");
-const analyzeRepo = require("../repoAnalyzer");
-const { createClient } = require("@supabase/supabase-js");
+const { config } = require("../config");
+const { createRateLimiter } = require("../lib/rateLimit");
 
 const router = express.Router();
 
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_KEY
-);
+// Each visitor (IP) may request a few previews an hour (cached ones included).
+const previewLimitPerVisitor = createRateLimiter({
+    windowMs: 60 * 60 * 1000,
+    max: config.preview.perVisitorPerHour,
+    key: (req) => req.ip,
+});
 
-function sanitizeString(input, maxLength = 100) {
-    if (!input || typeof input !== 'string') return '';
-    return validator.escape(input.trim()).slice(0, maxLength);
+// The server's daily budget of new previews, counted in the database so it holds across
+// restarts and multiple backend instances.
+async function dailyPreviewBudgetLeft() {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count, error } = await supabase
+        .from('build_events')
+        .select('id', { count: 'exact', head: true })
+        .eq('event_type', 'preview')
+        .gte('created_at', since);
+    if (error) throw error;
+    return config.preview.dailyLimit - (count || 0);
 }
 
 // PUBLIC ROUTE: No auth required, but strictly limited!
-router.post("/github", async (req, res) => {
-    const repoUrl = req.body.repoUrl; 
-    const projectName = sanitizeString(req.body.projectName, 64);
-    const tenantName  = sanitizeString(req.body.tenantName, 64);
-    const email = sanitizeString(req.body.email, 100);
+// Queues a small preview (config.preview.maxPages pages) of a public GitHub repo and
+// returns a job id to follow with GET /api/public/jobs/:id.
+// Anonymous visitors have no AI key, so this uses the server's own preview credential
+// (PREVIEW_AI_*). Without one the preview is off.
+router.post("/github", previewLimitPerVisitor, async (req, res) => {
+    const tenantName  = typeof req.body.tenantName === "string" ? req.body.tenantName.trim() : "";
+    const projectName = typeof req.body.projectName === "string" ? req.body.projectName.trim() : "";
+    const email = typeof req.body.email === "string" && validator.isEmail(req.body.email.trim())
+        ? req.body.email.trim()
+        : "";
 
-    if (!repoUrl || !projectName || !tenantName) {
-        return res.status(400).json({ error: "Missing repository details." });
+    if (!isSafeSegment(tenantName) || !isSafeSegment(projectName)) {
+        return res.status(400).json({ error: "Missing or invalid repository details." });
     }
 
-    // --- NEW: CREATE THE ORPHAN RECORD ---
-    // Check if the project already exists
-    const { data: existingProject } = await supabase
+    // The preview only ever documents the public GitHub repo matching the URL.
+    const repoUrl = `https://github.com/${tenantName}/${projectName}`;
+
+    // --- 1. Decide what to do based on the existing project row ---
+    const { data: existingProject, error: searchError } = await supabase
         .from('projects')
-        .select('id')
+        .select('id, status, user_id')
         .eq('tenant_name', tenantName)
         .eq('project_name', projectName)
-        .single();
+        .limit(1)
+        .maybeSingle();
 
-    // If it doesn't exist, create an orphan row (user_id is null)
-    if (!existingProject) {
-        await supabase.from('projects').insert({
-            tenant_name: tenantName,
-            project_name: projectName,
-            status: 'running',
-            user_id: null // <-- This makes it an orphan!
-        });
-    } else {
-        await supabase.from('projects')
-            .update({ status: 'running' })
-            .eq('id', existingProject.id);
+    if (searchError) {
+        console.error("Public API lookup failed:", searchError);
+        return res.status(500).json({ error: "Failed to look up the project." });
     }
 
-    try {
-        console.log(`\n [Public API] Starting free preview request for ${repoUrl}...`);
-        
-        // --- 1. THE AMNESIA FIX (Safe Database Query) ---
-        // Using limit(1).maybeSingle() prevents crashes if a duplicate ever sneaks in
-        const { data: existingProject, error: searchError } = await supabase
-            .from('projects')
-            .select('id, status')
-            .eq('tenant_name', tenantName)
-            .eq('project_name', projectName)
-            .limit(1)
-            .maybeSingle();
-
-        if (existingProject) {
-            // Cache Hit: It's already done!
-            if (existingProject.status === 'successful') {
-                console.log(`[Public API] 🟢 Cache hit! Docs for ${projectName} already exist.`);
-                return res.json({
-                    message: "Documentation already exists! Redirecting...",
-                    tenant: tenantName,
-                    version: projectName,
-                    cached: true 
-                });
-            }
-            
-            // Conflict: Someone else is already generating it right now!
-            if (existingProject.status === 'running') {
-                console.log(`[Public API] 🟡 Generation already in progress for ${projectName}.`);
-                return res.status(409).json({ 
-                    error: "Documentation generation is already in progress. Please check back in a few minutes." 
-                });
-            }
-
-            // Recovery: It exists but previously failed. Update it!
-            await supabase.from('projects')
-                .update({ status: 'running', repo_url: repoUrl })
-                .eq('id', existingProject.id);
-                
-        } else {
-            // Brand New: Insert a fresh row
-            await supabase.from('projects').insert([{
-                tenant_name: tenantName,
-                project_name: projectName,
-                repo_url: repoUrl,
-                status: 'running',
-            }]);
-        }
-
-        // --- 2. THE GENERATION PROCESS ---
-        const downloadedFolderPath = await cloneRepo(repoUrl, projectName);
-        const codeMap = analyzeRepo(downloadedFolderPath);
-        const foundFiles = scanCodeFiles(downloadedFolderPath);
-
-        if (foundFiles.length === 0) {
-            // Update the DB to 'failed' before telling the frontend!
-            await supabase.from('projects').update({ status: 'failed' }).eq('tenant_name', tenantName).eq('project_name', projectName);
-            return res.status(404).json({ error: "No code files found." });
-        }
-
-        // The PLG Trick: Only grab the first 3 files for the free preview
-        const previewFiles = foundFiles.slice(0, 3);
-        console.log(`[Public API] Generating ${previewFiles.length} preview files to save credits...`);
-
-        const targetDir = path.join(__dirname, "../../docs", tenantName, projectName);
-        if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-
-        // Generate the docs
-        for (const file of previewFiles) {
-            await new Promise(resolve => setTimeout(resolve, 3000)); // Respect rate limits
-            const markdownOutput = await generateDocs(file, codeMap);
-
-            if (markdownOutput) {
-                const relativePath = path.relative(downloadedFolderPath, file.path);
-                const parsedPath = path.parse(relativePath);
-                const nestedTargetDir = path.join(targetDir, parsedPath.dir);
-                
-                if (!fs.existsSync(nestedTargetDir)) fs.mkdirSync(nestedTargetDir, { recursive: true });
-
-                const mdFilePath = path.join(nestedTargetDir, `${parsedPath.name}.mdx`);
-                fs.writeFileSync(mdFilePath, markdownOutput);
-            }
-        }
-
-        console.log("[Public API] Preview generation finished. Starting build worker...");
-        
-        // --- 3. THE WORKER SYNC FIX ---
-        const buildScriptPath = path.join(__dirname, "../../build/build.js");
-        const targetScope = `${tenantName}/${projectName}`;
-        
-        // Wrap the worker in a Promise so the backend WAITS for it to finish!
-        await new Promise((resolve, reject) => {
-            const buildProcess = spawn("node", [buildScriptPath, "--scope", targetScope]);
-
-            buildProcess.stdout.on("data", (data) => process.stdout.write(`[Worker] ${data}`));
-            buildProcess.stderr.on("data", (data) => console.error(`[Worker Error] ${data}`));
-
-            buildProcess.on("close", (code) => {
-                if (code === 0) resolve();
-                else reject(new Error("Build worker failed"));
-            });
-        });
-
-        // Mark as successful in DB ONLY AFTER the worker is completely done
-        await supabase.from('projects')
-            .update({ status: 'successful' })
-            .eq('tenant_name', tenantName)
-            .eq('project_name', projectName);
-
-            if (email) {
-            sendSuccessEmail(email, tenantName, projectName);
-        }
-
-        // --- 4. THE FINAL RESPONSE ---
-        // NOW we tell the frontend it is safe to redirect!
-        res.json({
-            message: "Documentation generated successfully!",
+    // Cache hit: the docs already exist.
+    if (existingProject?.status === 'successful' || existingProject?.status === 'live') {
+        console.log(`[Public API] 🟢 Cache hit! Docs for ${projectName} already exist.`);
+        return res.json({
+            message: "Documentation already exists! Redirecting...",
             tenant: tenantName,
             version: projectName,
-            cached: false
+            cached: true
         });
-
-    } catch (error) {
-        console.error("Public API Error:", error);
-        if (!res.headersSent) res.status(500).json({ error: "Failed to generate preview." });
     }
+
+    // Someone already started a preview of this repo: watch that one.
+    if (existingProject) {
+        const activeJob = await findActivePreview(existingProject.id);
+        if (activeJob) {
+            return res.status(202).json({ message: "Documentation is already being generated.", jobId: activeJob.id, tenant: tenantName, version: projectName });
+        }
+    }
+
+    // A project someone has claimed is regenerated from their dashboard, not from here.
+    if (existingProject?.user_id) {
+        return res.status(409).json({
+            error: "This project is managed by its owner and can't be regenerated from a preview."
+        });
+    }
+
+    const llm = getPreviewLLM();
+    if (!llm) {
+        return res.status(503).json({ error: "Free previews are turned off on this server. Sign in and connect your own AI provider to generate docs." });
+    }
+
+    if (await dailyPreviewBudgetLeft() <= 0) {
+        res.set("Retry-After", "3600");
+        return res.status(429).json({ error: "Free previews are busy today. Try again tomorrow, or sign in and use your own AI provider." });
+    }
+
+    let projectId = existingProject?.id;
+    if (projectId) {
+        await supabase.from('projects').update({ repo_url: repoUrl }).eq('id', projectId);
+    } else {
+        // Brand new: an orphan row (user_id is null until the owner signs in and claims it).
+        const { data: inserted, error: insertError } = await supabase.from('projects').insert({
+            tenant_name: tenantName,
+            project_name: projectName,
+            repo_url: repoUrl,
+            status: 'queued',
+            user_id: null,
+        }).select('id').single();
+
+        if (insertError) {
+            // 23505 = unique violation: another request created it a moment ago.
+            if (insertError.code === '23505') {
+                return res.status(409).json({ error: "Documentation generation is already in progress. Please check back in a few minutes." });
+            }
+            console.error("Public API insert failed:", insertError);
+            return res.status(500).json({ error: "Failed to create the project." });
+        }
+        projectId = inserted.id;
+    }
+
+    // --- 2. Queue the preview (capped to config.preview.maxPages pages to save credits) ---
+    const { jobId } = await enqueueJob({
+        projectId,
+        eventType: 'preview',
+        triggeredBy: 'public',
+        payload: { repoUrl, tenantName, projectName, email: email || undefined },
+        provider: llm.provider,
+        model: llm.writerModel,
+    });
+    console.log(`[Public API] Queued a free preview of ${repoUrl} (job ${jobId}).`);
+
+    res.status(202).json({ message: "Preview queued.", jobId, tenant: tenantName, version: projectName });
+});
+
+async function findActivePreview(projectId) {
+    const { data } = await supabase
+        .from('build_events')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('event_type', 'preview')
+        .in('status', ['queued', 'running'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+    return data?.[0] || null;
+}
+
+// Progress of a free preview, for the page the visitor is waiting on. Only preview jobs
+// are visible here, and only what the waiting page needs.
+router.get("/jobs/:id", async (req, res) => {
+    const job = await getJob(req.params.id);
+    if (!job || job.event_type !== 'preview') {
+        return res.status(404).json({ error: "Preview not found." });
+    }
+
+    const { data: project } = await supabase
+        .from('projects')
+        .select('tenant_name, project_name')
+        .eq('id', job.project_id)
+        .maybeSingle();
+
+    // Problems with the server's own AI credential are the administrator's, not the visitor's:
+    // only problems with the repository itself are explained.
+    const error = job.status === 'failed'
+        ? (job.progress?.code === 'invalid_input' && job.error_message) || "The free preview couldn't be generated. Try again later."
+        : null;
+
+    res.json({
+        status: job.status,
+        progress: job.progress,
+        error,
+        tenant: project?.tenant_name,
+        version: project?.project_name,
+    });
 });
 
 module.exports = router;

@@ -1,25 +1,30 @@
 {
-  "name": "mintlify-clone",
+  "name": "docgen",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Open-source, AI-generated documentation sites (Mintlify-style)",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "setup": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:docs": "node build/build.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.98.0",
     "dotenv": "^17.3.1",
     "github-slugger": "^2.0.0",
-    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.3.2",
     "rehype-stringify": "^10.0.1",
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
   }
 }

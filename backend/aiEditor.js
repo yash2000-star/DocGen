@@ -1,16 +1,18 @@
-require("dotenv").config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { isFatalLLMError } = require("./ai/errors");
+const { COMPONENT_NAMES } = require("./mdx/components");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// The allowed components come from the shared contract, so the critic, the compiler and
+// the docs viewer always agree.
+const ALLOWED_COMPONENTS = COMPONENT_NAMES.map((name) => `<${name}>`).join(", ");
 
-// ✅ Use flash-lite for editor — saves quota, still accurate for cleanup work
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
-
-async function editDocs(draftMdx, sourceCode = null) {
+// The critic runs on the user's own provider with their critic model, which is usually
+// a cheaper model than the writer: cleanup and fact-checking need less reasoning.
+//   llm: { client, criticModel } from getUserLLM()
+async function editDocs(draftMdx, sourceCode = null, llm) {
 
   // ✅ Include source code context if provided so editor can check accuracy
   const sourceContext = sourceCode
-    ? `\n### ORIGINAL SOURCE CODE (use this to verify accuracy):\n\`\`\`javascript\n${sourceCode}\n\`\`\``
+    ? `\n### ORIGINAL SOURCE CODE (use this to verify accuracy):\n${sourceCode}`
     : "";
 
   const prompt = `You are a ruthless, elite Technical Documentation Editor at a top-tier SaaS company.
@@ -21,9 +23,10 @@ Your job is to review an MDX documentation draft and fix ALL formatting, structu
 1. MARKDOWN FENCE TRAP: Output must NOT be wrapped in \`\`\`mdx blocks. Remove them entirely. File must start with --- YAML frontmatter.
 2. HALLUCINATED COMPONENTS: Replace <InlineCode>text</InlineCode> with \`text\`. Replace <Highlight> with **bold**. Replace any invented tags with standard markdown.
 3. UNCLOSED TAGS: Every opening <ComponentName> must have a closing </ComponentName>. Fix any that are missing.
-4. FRONTMATTER: Must have exactly these three fields at the top, valid YAML syntax:
+4. FRONTMATTER: Must have exactly these fields at the top, valid YAML syntax (keep the draft's values):
    ---
    title: "..."
+   description: "..."
    group: "..."
    order: 1
    ---
@@ -35,12 +38,15 @@ Your job is to review an MDX documentation draft and fix ALL formatting, structu
 7. PARAMETER NAMES: Check that every <ParamField> matches the actual parameter names in the source code. Fix any that are wrong.
 8. CODE EXAMPLES: Check that code examples use real function names and real parameter shapes from the source code.
 9. RETURN VALUES: Check that <ResponseField> descriptions match what the function actually returns.
+10. NO INVENTIONS: Remove or correct any file name, command, npm script, package, environment variable, endpoint or feature the source code doesn't show.
 
 ### STRICTLY ALLOWED COMPONENTS (replace anything else with markdown):
-<Note>, <Tip>, <Info>, <Warning>, <Danger>, <Check>, <Steps>, <Step>,
-<Card>, <CardGroup>, <CodeGroup>, <Accordion>, <AccordionGroup>,
-<ParamField>, <ResponseField>, <Expandable>, <RequestExample>,
-<ResponseExample>, <Badge>, <Tooltip>, <Frame>, <Update>, <ApiPlayground>
+${ALLOWED_COMPONENTS}
+
+### NO CODE IN THE PAGE (it is removed before publishing, so pages relying on it break):
+- No import or export statements.
+- No JavaScript expressions in {braces}. Prop values are plain: title="Text", cols={2}, required, body={{ "name": "value" }}.
+- In normal text, write a literal "<" as &lt; and a literal "{" or "}" as \{ or \}.
 ${sourceContext}
 
 ### THE DRAFT TO REVIEW:
@@ -51,8 +57,14 @@ OUTPUT ONLY THE FINAL POLISHED MDX. NO EXPLANATION. NO PREAMBLE. NO WRAPPER CODE
   try {
     console.log(`\n🕵️  Critic is reviewing the draft...`);
 
-    const result = await model.generateContent(prompt);
-    let text = result.response.text().trim();
+    const result = await llm.client.generateText({ model: llm.criticModel, prompt });
+    let text = result.text.trim();
+
+    // An empty or cut-off review is worse than the draft it was reviewing.
+    if (!text || result.truncated) {
+      console.warn("⚠️  Critic returned an empty or truncated review; keeping the draft.");
+      return draftMdx;
+    }
 
     // ✅ Markdown Fence Sanitizer — removes opening ```mdx or ```
     if (text.startsWith("```")) {
@@ -80,7 +92,9 @@ OUTPUT ONLY THE FINAL POLISHED MDX. NO EXPLANATION. NO PREAMBLE. NO WRAPPER CODE
     return text;
 
   } catch (error) {
-    console.error("❌ Critic failed:", error);
+    // A bad key or missing model must stop the run, not be hidden behind the draft.
+    if (isFatalLLMError(error)) throw error;
+    console.error("❌ Critic failed:", error.message);
     return draftMdx; // fallback — never break the build
   }
 }

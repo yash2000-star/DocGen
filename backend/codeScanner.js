@@ -28,16 +28,19 @@ function scanCodeFiles(dir, codeFiles = [], contextFiles = []) {
 
     for (const item of items) {
         const fullPath = path.join(dir, item);
-        const stat = fs.statSync(fullPath);
+        // lstat, not stat: a repository can contain symlinks to files outside it (for
+        // example the server's own .env), and those must never be read.
+        const stat = fs.lstatSync(fullPath);
+        if (stat.isSymbolicLink()) continue;
 
         if (stat.isDirectory()) {
             scanCodeFiles(fullPath, codeFiles, contextFiles);
-        } else {
+        } else if (stat.isFile()) {
             const ext = path.extname(item).toLowerCase();
+            // Cap file size to avoid blowing up AI context windows (checked before reading).
+            if (stat.size > 50000) continue;
+            if (!CODE_EXTENSIONS.includes(ext) && !CONTEXT_EXTENSIONS.includes(ext) && !SPECIAL_FILES.includes(item)) continue;
             const content = fs.readFileSync(fullPath, "utf-8");
-
-            // Cap file size to avoid blowing up AI context windows
-            if (content.length > 50000) continue;
 
             if (CODE_EXTENSIONS.includes(ext)) {
                 codeFiles.push({

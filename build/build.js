@@ -1,28 +1,20 @@
 const fs = require("fs");
 const path = require("path");
-const { title } = require("process");
 const { unified } = require("unified");
 const remarkParse = require("remark-parse").default;
 const remarkRehype = require("remark-rehype").default;
 const rehypeStringify = require("rehype-stringify").default;
 const { visit } = require("unist-util-visit");
 const GithubSlugger = require("github-slugger").default;
-const matter = require("gray-matter");
+const { parseFrontmatter } = require("../lib/frontmatter");
+const { normalizeNavigation } = require("../lib/siteManifest");
 
-//Embedding Tool
-require("dotenv").config({ path: path.join(__dirname, "../backend/.env") });
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const { createClient } = require("@supabase/supabase-js");
+// Ask AI search index (Postgres full-text search, no AI calls needed)
+const supabase = require("../backend/lib/supabase");
+const { compileSafeMdx } = require("../backend/mdx/safeMdx");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const embeddingModel = genAI.getGenerativeModel({
-  model: "gemini-embedding-001",
-});
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY,
-);
+// Longest chunk stored for Ask AI; longer sections are split.
+const MAX_CHUNK_CHARS = 4000;
 
 const DOCS_PATH = path.join(__dirname, "../docs");
 const DIST_PATH = path.join(__dirname, "../dist");
@@ -88,7 +80,7 @@ function addHeadingIds() {
 async function convertMarkdownToHTML(filePath) {
   const markdown = fs.readFileSync(filePath, "utf-8");
 
-  const parsed = matter(markdown);
+  const parsed = parseFrontmatter(markdown);
   const content = parsed.content;
   const data = parsed.data;
 
@@ -207,6 +199,59 @@ function extractSearchSections(markdown, fileTitle, route, tenant, version) {
   return sections;
 }
 
+// Splits a page into one chunk per heading section, keeping the raw markdown (code
+// samples included) because Ask AI quotes from it. Long sections are split further.
+function extractChunks(markdown, fileTitle, route) {
+  const slugger = new GithubSlugger();
+  const chunks = [];
+  let heading = null;
+  let anchor = null;
+  let lines = [];
+
+  const flush = () => {
+    const text = lines.join("\n").trim();
+    if (text.length > 20) {
+      const title = heading ? `${fileTitle} > ${heading}` : fileTitle;
+      const chunkRoute = anchor ? `${route}#${anchor}` : route;
+      for (let start = 0; start < text.length; start += MAX_CHUNK_CHARS) {
+        chunks.push({ route: chunkRoute, title, text: text.slice(start, start + MAX_CHUNK_CHARS) });
+      }
+    }
+    lines = [];
+  };
+
+  let inCodeBlock = false;
+  for (const line of markdown.split("\n")) {
+    if (line.trim().startsWith("```")) inCodeBlock = !inCodeBlock;
+    // A "#" inside a code block is a comment, not a heading.
+    if (!inCodeBlock && /^#{1,6}\s/.test(line.trim())) {
+      flush();
+      heading = line.trim().replace(/^#+\s*/, "");
+      anchor = slugger.slug(heading);
+    } else {
+      lines.push(line);
+    }
+  }
+  flush();
+  return chunks;
+}
+
+// Replaces a project's Ask AI chunks with the ones from this build.
+async function replaceChunks(tenant, version, chunks) {
+  const { error: deleteError } = await supabase
+    .from("doc_chunks")
+    .delete()
+    .eq("tenant", tenant)
+    .eq("version", version);
+  if (deleteError) throw new Error(`Couldn't clear old search chunks: ${deleteError.message}`);
+
+  for (let i = 0; i < chunks.length; i += 500) {
+    const { error } = await supabase.from("doc_chunks").insert(chunks.slice(i, i + 500));
+    if (error) throw new Error(`Couldn't save search chunks: ${error.message}`);
+  }
+  console.log(`[Search] Indexed ${chunks.length} sections for ${tenant}/${version}.`);
+}
+
 async function build() {
   if (!fs.existsSync(DIST_PATH)) {
     fs.mkdirSync(DIST_PATH, { recursive: true });
@@ -259,6 +304,7 @@ const docs = [];
       route: doc.route,
       html: result.html,
       title,
+      description: typeof result.meta.description === "string" ? result.meta.description.trim().slice(0, 300) : "",
       order,
       tenant: doc.tenant,
       version: doc.version,
@@ -268,62 +314,10 @@ const docs = [];
     const sections = extractSearchSections(result.raw, title, doc.route, doc.tenant, doc.version);
     searchIndex.push(...sections);
 
-    // If it made it past the "continue" guard above, it belongs to our project and needs vectors!
-    const shouldGenerateVectors = true;
-    // Chunking Engine
-    if (shouldGenerateVectors) {
-    const paragraphs = result.raw.split("\n\n");
-    console.log(`Generating math vectors for: ${doc.route}.md...`);
-
-    await supabase
-      .from("doc_vectors")
-      .delete()
-      .eq("tenant", doc.tenant)
-      .eq("version", doc.version)
-      .eq("route", doc.route);
-
-    const docVectorsToUpload = [];
-
-    for (const para of paragraphs) {
-      const cleanText = para.trim();
-
-      if (cleanText.length > 20) {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          const embedResult = await embeddingModel.embedContent(cleanText);
-          const vectorArray = embedResult.embedding.values;
-
-          const chunkData = {
-            tenant: doc.tenant,
-            version: doc.version,
-            route: doc.route,
-            text: cleanText,
-            embedding: vectorArray,
-          };
-
-          docVectorsToUpload.push(chunkData);
-          aiChunks.push(chunkData);
-        } catch (error) {
-          console.log(` Failed to generate embedding for ${doc.route}:`, error);
-        }
-      }
-    }
-
-    if (docVectorsToUpload.length > 0) {
-      console.log(`Upload ${docVectorsToUpload.length} vectors to Supabase...`);
-      const { error } = await supabase
-        .from("doc_vectors")
-        .insert(docVectorsToUpload);
-
-      if (error) {
-        console.error(` Supabase upload failed for ${doc.route}:`, error);
-      } else {
-        console.log(`Upload successful!`);
-      }
-    }
-    } else {
-      console.log(`⏩ Skipping expensive vector generation for: ${doc.route} (Unchanged)`);
+    // Ask AI searches these sections by keyword.
+    const relativeRoute = doc.route.replace(`${doc.tenant}/${doc.version}/`, "");
+    for (const chunk of extractChunks(result.raw, title, relativeRoute)) {
+      aiChunks.push({ tenant: doc.tenant, version: doc.version, ...chunk });
     }
 
     const outputPath = path.join(DIST_PATH, doc.route + ".mdx");
@@ -332,6 +326,14 @@ const docs = [];
     fs.mkdirSync(outputDir, { recursive: true });
 
     fs.writeFileSync(outputPath, result.raw);
+
+    // The viewer renders this pre-compiled, code-free tree instead of running the MDX.
+    // A page that doesn't compile (for example after a manual edit) shows its error.
+    const compiled = compileSafeMdx(fs.readFileSync(doc.filePath, "utf8")); // full file, so error lines match it
+    const page = compiled.ok ? { title, tree: compiled.tree } : { title, error: compiled.error };
+    if (!compiled.ok) console.warn(`[Worker] ${doc.route} doesn't compile: ${compiled.error.message}`);
+    if (compiled.ok && compiled.warnings.length) console.warn(`[Worker] ${doc.route}: ${compiled.warnings.join("; ")}`);
+    fs.writeFileSync(outputPath.replace(/\.mdx$/, ".page.json"), JSON.stringify(page));
 
     const toDir = path.join(DIST_PATH, "toc");
     fs.mkdirSync(toDir, { recursive: true });
@@ -440,6 +442,22 @@ const docs = [];
         JSON.stringify(sidebar, null, 2),
       );
 
+      // The site manifest: every page's title and description, and the navigation.
+      const manifestPages = {};
+      for (const doc of cleanDocs) manifestPages[doc.route] = { title: doc.title, description: doc.description || "", group: doc.group };
+      const firstGroupsByOrder = [...new Set(cleanDocs.map((doc) => doc.group))].map((group) => ({ group, pages: cleanDocs.filter((d) => d.group === group).map((d) => d.route) }));
+      const configuredNavigation = Array.isArray(siteConfig.navigation) && siteConfig.navigation.length ? siteConfig.navigation : firstGroupsByOrder;
+      fs.writeFileSync(
+        path.join(targetDir, "site.json"),
+        JSON.stringify({
+          name: siteConfig.name || version,
+          description: siteConfig.description || siteConfig.metadata?.["og:description"] || "",
+          pages: manifestPages,
+          navigation: normalizeNavigation(configuredNavigation, manifestPages),
+          builtAt: new Date().toISOString(),
+        }, null, 2),
+      );
+
       const localSearchIndex = searchIndex
         .filter((item) => item.tenant === tenant && item.version === version)
         .map((item) => ({
@@ -452,18 +470,15 @@ const docs = [];
         JSON.stringify(localSearchIndex, null, 2),
       );
 
-      // Save Ai chunks
-      const localAiChunks = aiChunks
-        .filter((item) => item.tenant === tenant && item.version === version)
-        .map((item) => ({
-          ...item,
-          route: item.route.replace(`${tenant}/${version}/`, ""),
-        }));
+      // Save Ai chunks (also published as aiChunks.json for agents)
+      const localAiChunks = aiChunks.filter((item) => item.tenant === tenant && item.version === version);
 
       fs.writeFileSync(
         path.join(targetDir, "aiChunks.json"),
         JSON.stringify(localAiChunks, null, 2),
       );
+
+      await replaceChunks(tenant, version, localAiChunks);
     }
   }
 
@@ -512,4 +527,7 @@ function generateSidebarTree(docs, config) {
   return tree;
 }
 
-build();
+build().catch((error) => {
+  console.error(`[Worker] Build failed: ${error.message}`);
+  process.exit(1);
+});

@@ -81,6 +81,13 @@ export const Badge = ({ children, type = "default" }) => {
     warning: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400", 
     danger:  "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400", 
     info:    "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-400", 
+    // HTTP methods, for API reference pages
+    get:     "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-400",
+    post:    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
+    put:     "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
+    patch:   "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
+    delete:  "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400",
+    deprecated: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
   };
 
   const styleClass = styles[type] || styles.default;
@@ -242,9 +249,10 @@ export const Update = ({ label = "Update", date, children }) => (
   </div>
 );
 
-export const Tooltip = ({ text, children }) => (
+// Mintlify pages use tip="..."; text="..." is accepted too.
+export const Tooltip = ({ tip, text, children }) => (
   <span 
-    title={text}
+    title={tip || text}
     className="border-b border-dashed border-slate-400 dark:border-slate-500 cursor-help text-slate-900 dark:text-slate-100 font-medium"
   >
     {children}

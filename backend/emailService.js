@@ -1,17 +1,18 @@
 const nodemailer = require("nodemailer");
+const { config } = require("./config");
 
 // Configure the email transporter
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: process.env.EMAIL_USER, // Your Gmail address
-    pass: process.env.EMAIL_PASS  // Your Gmail App Password (NOT your regular password)
+    user: config.email.user, // Your Gmail address
+    pass: config.email.pass  // Your Gmail App Password (NOT your regular password)
   }
 });
 
 async function sendSuccessEmail(toEmail, tenant, project) {
   // The link to the generated docs
-  const docLink = `http://localhost:5173/docs/${tenant}/${project}`;
+  const docLink = `${config.frontendUrl}/docs/${tenant}/${project}`;
   
   const mailOptions = {
     from: '"DocGen AI" <no-reply@docgen.com>',

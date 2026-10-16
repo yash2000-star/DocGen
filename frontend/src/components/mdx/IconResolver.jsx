@@ -24,5 +24,10 @@ export function IconResolver({ name, color = "var(--primary-brand, #3b82f6)", si
 
   if (!IconComponent) return null;
 
+  // Emoji (or any non-name text) is shown as-is rather than as a "?" icon.
+  if (/[^ -~]/.test(name)) {
+    return <span className={className} style={{ fontSize: size, lineHeight: 1 }} aria-hidden="true">{name}</span>;
+  }
+
   return <IconComponent color={color} size={size} className={className} />;
 }

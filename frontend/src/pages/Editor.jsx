@@ -155,11 +155,13 @@ export default function Editor() {
               content: activePage.content
           })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      // The server refuses pages with MDX syntax errors and says where the error is.
+      if (!res.ok) throw new Error(data.error || "Failed to publish document.");
       alert("Saved & Published Successfully!");
     } catch (err) {
       console.error(err);
-      alert("Failed to publish document.");
+      alert(err.message || "Failed to publish document.");
     } finally {
       setSaving(false);
     }

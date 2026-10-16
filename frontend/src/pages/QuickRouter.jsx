@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { supabase } from "../lib/auth";
 
 export default function QuickRouter() {
   const { tenant, version } = useParams();
@@ -11,18 +10,18 @@ export default function QuickRouter() {
 
   useEffect(() => {
     async function routeUser() {
-      // 1. Check if it exists in our database
-      const { data, error } = await supabase
-        .from('projects')
-        .select('id')
-        .eq('tenant_name', tenant)
-        .eq('project_name', version)
-        .single();
-
-      if (data && !error) {
-        // It exists! Send them to the live docs
-        navigate(`/docs/${tenant}/${version}`, { replace: true });
-        return;
+      // 1. Check if docs for this repo are already published.
+      // (Project rows are private to their owners, so we ask for the built site instead.)
+      try {
+        const API_URL = import.meta.env.VITE_API_URL;
+        const docsRes = await fetch(`${API_URL}/api/static/${tenant}/${version}/docs.json`, { cache: "no-store" });
+        if (docsRes.ok) {
+          // It exists! Send them to the live docs
+          navigate(`/docs/${tenant}/${version}`, { replace: true });
+          return;
+        }
+      } catch {
+        // Backend unreachable; fall through to the GitHub check.
       }
 
       // 2. Not in DB. Let's ask GitHub if this repo actually exists!
