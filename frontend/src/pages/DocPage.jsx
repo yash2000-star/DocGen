@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import Breadcrumbs from "../components/mdx/Breadcrumbs";
 import SafeMdxRenderer from "../components/mdx/SafeMdxRenderer";
+import { docsBase, isInternalDocHref } from "../lib/docLinks";
 
 // --- NEW: Accept the custom props from DocEngine! ---
 export default function DocPage({ customTenant, customVersion, defaultRoute }) {
   const params = useParams();
+  const navigate = useNavigate();
 
   // THE MAGIC TRICK: Use the custom domain props, otherwise use the URL!
   const tenant = customTenant || params.tenant;
@@ -43,8 +45,21 @@ export default function DocPage({ customTenant, customVersion, defaultRoute }) {
     return () => { cancelled = true; };
   }, [tenant, version, currentRoute]);
 
+  const linkBase = docsBase(tenant, version);
+
+  // Follow links between pages of this site without reloading the app.
+  const handleClick = (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest?.("a[href]");
+    if (!anchor || anchor.target === "_blank") return;
+    const href = anchor.getAttribute("href");
+    if (!isInternalDocHref(href, linkBase)) return;
+    event.preventDefault();
+    navigate(href);
+  };
+
   return (
-    <div className="mdx-content">
+    <div className="mdx-content" onClick={handleClick}>
       <Breadcrumbs path={currentRoute} />
       <div className="pb-24">
         {page.status === "loading" && <h2>Loading document...</h2>}
@@ -56,7 +71,7 @@ export default function DocPage({ customTenant, customVersion, defaultRoute }) {
             This page has a syntax error{page.error.line ? ` on line ${page.error.line}` : ""} and can't be shown: {page.error.message}
           </div>
         )}
-        {page.status === "ready" && <SafeMdxRenderer tree={page.tree} />}
+        {page.status === "ready" && <SafeMdxRenderer tree={page.tree} linkBase={linkBase} />}
       </div>
     </div>
   );

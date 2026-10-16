@@ -23,7 +23,7 @@ const events = new EventEmitter();
 const PUBLIC_COLUMNS = [
     "id", "project_id", "event_type", "status", "triggered_by", "files_count", "created_at",
     "provider", "model", "input_tokens", "output_tokens", "error_message", "finished_at",
-    "attempts", "max_attempts", "run_after", "started_at", "progress", "cancel_requested",
+    "attempts", "max_attempts", "run_after", "started_at", "progress", "cancel_requested", "quality",
 ].join(", ");
 
 const QUEUED_PROGRESS = { step: "queued", message: "Waiting for a worker" };
@@ -122,7 +122,7 @@ async function enqueueWebhookUpdate({ projectId, payload, provider, model }) {
         const files = [...new Set([...(waiting.payload?.files || []), ...payload.files])];
         const { data, error } = await supabase
             .from("build_events")
-            .update({ payload: { ...waiting.payload, files } })
+            .update({ payload: { ...waiting.payload, files, refreshApiReference: Boolean(waiting.payload?.refreshApiReference || payload.refreshApiReference) } })
             .eq("id", waiting.id)
             .eq("status", "queued") // A worker may have claimed it meanwhile.
             .select("id");
@@ -221,7 +221,7 @@ function usageColumns(usage) {
     return { input_tokens: usage?.inputTokens || 0, output_tokens: usage?.outputTokens || 0 };
 }
 
-async function completeJob(job, { filesCount = 0, usage } = {}, workerId = WORKER_ID) {
+async function completeJob(job, { filesCount = 0, usage, quality } = {}, workerId = WORKER_ID) {
     const owned = await finishJob(job, {
         status: "successful",
         files_count: filesCount,
@@ -230,6 +230,7 @@ async function completeJob(job, { filesCount = 0, usage } = {}, workerId = WORKE
         locked_by: null,
         finished_at: new Date().toISOString(),
         progress: { step: "done", message: filesCount === 1 ? "1 page written" : `${filesCount} pages written` },
+        quality: quality || null,
         payload: scrubPayload(job.payload),
     }, workerId);
     if (owned) await settleProjectStatus(job.project_id, "successful");

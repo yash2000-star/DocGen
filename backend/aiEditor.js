@@ -12,7 +12,7 @@ async function editDocs(draftMdx, sourceCode = null, llm) {
 
   // ✅ Include source code context if provided so editor can check accuracy
   const sourceContext = sourceCode
-    ? `\n### ORIGINAL SOURCE CODE (use this to verify accuracy):\n\`\`\`javascript\n${sourceCode}\n\`\`\``
+    ? `\n### ORIGINAL SOURCE CODE (use this to verify accuracy):\n${sourceCode}`
     : "";
 
   const prompt = `You are a ruthless, elite Technical Documentation Editor at a top-tier SaaS company.
@@ -23,9 +23,10 @@ Your job is to review an MDX documentation draft and fix ALL formatting, structu
 1. MARKDOWN FENCE TRAP: Output must NOT be wrapped in \`\`\`mdx blocks. Remove them entirely. File must start with --- YAML frontmatter.
 2. HALLUCINATED COMPONENTS: Replace <InlineCode>text</InlineCode> with \`text\`. Replace <Highlight> with **bold**. Replace any invented tags with standard markdown.
 3. UNCLOSED TAGS: Every opening <ComponentName> must have a closing </ComponentName>. Fix any that are missing.
-4. FRONTMATTER: Must have exactly these three fields at the top, valid YAML syntax:
+4. FRONTMATTER: Must have exactly these fields at the top, valid YAML syntax (keep the draft's values):
    ---
    title: "..."
+   description: "..."
    group: "..."
    order: 1
    ---
@@ -37,6 +38,7 @@ Your job is to review an MDX documentation draft and fix ALL formatting, structu
 7. PARAMETER NAMES: Check that every <ParamField> matches the actual parameter names in the source code. Fix any that are wrong.
 8. CODE EXAMPLES: Check that code examples use real function names and real parameter shapes from the source code.
 9. RETURN VALUES: Check that <ResponseField> descriptions match what the function actually returns.
+10. NO INVENTIONS: Remove or correct any file name, command, npm script, package, environment variable, endpoint or feature the source code doesn't show.
 
 ### STRICTLY ALLOWED COMPONENTS (replace anything else with markdown):
 ${ALLOWED_COMPONENTS}

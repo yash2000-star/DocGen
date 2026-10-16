@@ -1,5 +1,6 @@
 import { createElement, Fragment } from "react";
 import { docComponents } from "./registry";
+import { resolveDocHref } from "../../lib/docLinks";
 
 const VOID_ELEMENTS = new Set(["br", "hr", "img", "input"]);
 
@@ -29,11 +30,11 @@ function safeProps(props = {}) {
 
 // Builds React elements from a compiled page (see backend/mdx/safeMdx.js). The tree is
 // plain data: no code from the page ever runs here, and only known components render.
-function renderNode(node, key) {
+function renderNode(node, key, linkBase) {
   if (!node) return null;
   if (node.t === "text") return node.v;
 
-  const children = (node.c || []).map((child, index) => renderNode(child, index));
+  const children = (node.c || []).map((child, index) => renderNode(child, index, linkBase));
   if (node.t === "root") return createElement(Fragment, null, ...children);
 
   const type = docComponents[node.n] || (node.t === "el" && HTML_ELEMENTS.has(node.n) ? node.n : null);
@@ -41,11 +42,18 @@ function renderNode(node, key) {
   if (!type) return createElement(Fragment, { key }, ...children);
 
   const props = { ...safeProps(node.p), key };
+  // Links to other pages are written as "/slug"; point them at this docs site.
+  if (linkBase && typeof props.href === "string") props.href = resolveDocHref(props.href, linkBase);
   if (node.t === "el" && VOID_ELEMENTS.has(node.n)) return createElement(type, props);
   // Spread so a single text child arrives as a string (CodeBlock relies on that).
   return createElement(type, props, ...children);
 }
 
-export default function SafeMdxRenderer({ tree }) {
-  return renderNode(tree);
+/**
+ * @param {object} props
+ * @param {object} props.tree - Compiled page
+ * @param {string} [props.linkBase] - /docs/<tenant>/<project>, to resolve links between pages
+ */
+export default function SafeMdxRenderer({ tree, linkBase }) {
+  return renderNode(tree, undefined, linkBase);
 }

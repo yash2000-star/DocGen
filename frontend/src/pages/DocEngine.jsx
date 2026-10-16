@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import ThemeToggle from "../components/ThemeToggle";
 import SearchModal from "../components/SearchModal";
 import Sidebar from "../components/Sidebar";
@@ -8,6 +8,7 @@ import Toc from "../components/Toc";
 import AiChat from "../components/AiChat";
 import Logo from "../components/Logo";
 import { applyTheme } from "../lib/applyTheme";
+import { docsBase, resolveDocHref } from "../lib/docLinks";
 import { initThemeMode, shouldHideToggle } from "../lib/toggleTheme";
 import { applyPreset } from "../lib/themes";
 
@@ -39,6 +40,15 @@ export default function DocEngine({ customTenant, customVersion }) {
   useEffect(() => {
     setIsPreview(window !== window.top);
   }, []);
+
+  // Search results ask for a page with a "doc-change" event ({ detail: route }).
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!tenant || !version) return;
+    const onDocChange = (event) => navigate(resolveDocHref(String(event.detail || ""), docsBase(tenant, version)));
+    window.addEventListener("doc-change", onDocChange);
+    return () => window.removeEventListener("doc-change", onDocChange);
+  }, [tenant, version, navigate]);
 
  // Fetch the custom color theme if it exists
   useEffect(() => {
