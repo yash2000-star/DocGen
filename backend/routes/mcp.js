@@ -1,59 +1,57 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { DIST_DIR, isSafeSegment } = require('../lib/paths');
+
 const router = express.Router();
-const supabase = require('../lib/supabase');
 
-router.get('/:tenant/:project', async (req, res) => {
+// Lists the published .mdx pages of a built site, in sidebar order when docs.json has one.
+function publishedPages(siteDir) {
+    const files = [];
+    (function walk(dir, prefix) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
+            else if (entry.name.endsWith('.mdx')) files.push(rel.slice(0, -4));
+        }
+    })(siteDir, '');
+
+    let order = [];
     try {
-        const { tenant, project } = req.params;
+        const docsJson = JSON.parse(fs.readFileSync(path.join(siteDir, 'docs.json'), 'utf8'));
+        order = (docsJson.navigation || []).flatMap((group) => group.pages || []);
+    } catch {
+        // No docs.json: alphabetical order.
+    }
+    const rank = (slug) => { const i = order.indexOf(slug); return i === -1 ? Infinity : i; };
+    return files.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
 
-        // Query the specific project by tenant and version/name
-        const { data: projectData, error: projError } = await supabase
-            .from('projects')
-            .select('id, project_name')
-            .eq('tenant_name', tenant)
-            .eq('project_name', project)
-            .single();
+// Agent context for a docs site: the published pages as one text block. Only what's
+// already public on the site is returned (never editor drafts).
+router.get('/:tenant/:project', (req, res) => {
+    const { tenant, project } = req.params;
+    if (!isSafeSegment(tenant) || !isSafeSegment(project)) {
+        return res.status(400).json({ error: 'Invalid project.' });
+    }
 
-        if (projError || !projectData) {
-            return res.status(404).json({ error: 'Project context could not be located in database.' });
+    const siteDir = path.join(DIST_DIR, tenant, project);
+    if (!fs.existsSync(siteDir)) {
+        return res.status(404).json({ error: 'These docs have not been published.' });
+    }
+
+    try {
+        const pages = publishedPages(siteDir);
+        if (pages.length === 0) {
+            return res.json({ project, agent_context: 'This documentation project is currently empty.' });
         }
-
-        // Gather all attached semantic pages related to this project instance
-        const { data: pages, error: pagesError } = await supabase
-            .from('pages')
-            .select('title, file_path, content')
-            .eq('project_id', projectData.id)
-            .order('order_index', { ascending: true });
-
-        if (pagesError) {
-            console.error(pagesError);
-            return res.status(500).json({ error: 'Failed to extract MDX documents.' });
-        }
-
-        if (!pages || pages.length === 0) {
-            return res.json({ 
-                project: projectData.project_name, 
-                agent_context: "This documentation project is currently empty." 
-            });
-        }
-
-        // Model Context Protocol format - Raw AI Context Strings
-        const agentContext = pages.map(page => {
-            const fileName = page.title || page.file_path;
-            const cleanContent = page.content || '';
-            
-            return `File: ${fileName}\n\n${cleanContent}`;
-        }).join('\n\n---\n\n');
-
-        // Respond precisely with requested raw payload
-        res.json({
-            project: projectData.project_name,
-            agent_context: agentContext
-        });
-
+        const agentContext = pages
+            .map((slug) => `File: ${slug}\n\n${fs.readFileSync(path.join(siteDir, `${slug}.mdx`), 'utf8')}`)
+            .join('\n\n---\n\n');
+        res.json({ project, agent_context: agentContext });
     } catch (err) {
-        console.error("MCP build context error:", err);
-        res.status(500).json({ error: 'System error mapping knowledge tree to AI context format.' });
+        console.error('MCP build context error:', err);
+        res.status(500).json({ error: 'Failed to read the published docs.' });
     }
 });
 

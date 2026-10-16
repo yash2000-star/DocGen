@@ -11,6 +11,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import ProjectOverview from "./pages/ProjectOverview";
 import ProjectSettings from "./pages/ProjectSettings";
 import DomainSetup from "./pages/settings/DomainSetup";
+import GitSettings from "./pages/settings/GitSettings";
 import Authentication from "./pages/settings/Authentication";
 import General from "./pages/settings/General";
 import ApiKeys from "./pages/settings/ApiKeys";
@@ -154,6 +155,7 @@ function App() {
             <Route path="settings" element={<ProjectSettings />}>
               <Route index element={<Navigate to="domain" replace />} />
               <Route path="domain" element={<DomainSetup />} />
+              <Route path="git" element={<GitSettings />} />
               <Route path="authentication" element={<Authentication />} />
               <Route path="general" element={<General />} />
               <Route path="agent" element={<AgentSkills />} />

@@ -24,6 +24,14 @@ export const verifyOTP = (email, token) => {
   return supabase.auth.verifyOtp({ email, token, type: "email" });
 };
 
+// The user's GitHub username, from their linked GitHub identity (null if they signed in
+// with email only). Read from identities, not user_metadata, which users can edit.
+// The database applies the same rule: docs for github.com/<owner>/<repo> belong to <owner>.
+export function getGithubLogin(user) {
+  const github = user?.identities?.find((identity) => identity.provider === "github");
+  return github?.identity_data?.user_name || github?.identity_data?.preferred_username || null;
+}
+
 // 4. Session Helpers
 export const getUser = () => supabase.auth.getUser();
 export const logout = () => supabase.auth.signOut();
@@ -57,8 +65,7 @@ export async function claimOrphanProjects() {
   
   if (!user) return;
 
-  // Supabase stores the GitHub username here when they log in via OAuth
-  const githubUsername = user.user_metadata?.preferred_username || user.user_metadata?.user_name;
+  const githubUsername = getGithubLogin(user);
 
   if (githubUsername) {
     // Find any orphan projects matching this username and claim them!

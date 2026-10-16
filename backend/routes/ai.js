@@ -33,7 +33,7 @@ const handle = (fn) => async (req, res) => {
 /**
  * @param {object} middleware
  * @param {Function} middleware.requireAuth - Sets req.user
- * @param {Function} middleware.csrfProtection
+ * @param {Function} middleware.csrfProtection - Cross-site request check (lib/originCheck.js)
  */
 function createAiRouter({ requireAuth, csrfProtection }) {
     const router = express.Router();

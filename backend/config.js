@@ -12,6 +12,8 @@ const config = {
     nodeEnv: env.NODE_ENV || "development",
     port: Number(env.PORT) || 4000,
     frontendUrl: (env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, ""),
+    // Express "trust proxy": false (default), a hop count like 1, or a list of proxy addresses.
+    trustProxy: !env.TRUST_PROXY ? false : /^\d+$/.test(env.TRUST_PROXY) ? Number(env.TRUST_PROXY) : env.TRUST_PROXY === "true" ? true : env.TRUST_PROXY,
 
     supabase: {
         url: env.SUPABASE_URL,
@@ -31,11 +33,23 @@ const config = {
         criticModel: env.PREVIEW_AI_CRITIC_MODEL || "",
         // How many pages an anonymous preview may generate.
         maxPages: Number(env.PREVIEW_MAX_PAGES) || 3,
+        // New previews per visitor (IP) per hour, and for the whole server per day. They're
+        // paid for by the server's own AI key, so both are capped.
+        perVisitorPerHour: Number(env.PREVIEW_PER_VISITOR_PER_HOUR) || 5,
+        dailyLimit: Number(env.PREVIEW_DAILY_LIMIT) || 100,
     },
 
     // Largest prompt (in tokens) sent to a model for one call. Repos bigger than this are
     // summarized: the most important files go in full, the rest are listed by name.
     promptBudgetTokens: Number(env.AI_PROMPT_BUDGET_TOKENS) || 60000,
+
+    // The docs "Try it" API playground calls APIs through the backend. Localhost and private
+    // networks are reachable in development only, unless set explicitly.
+    apiPlayground: {
+        allowPrivate: env.API_PLAYGROUND_ALLOW_PRIVATE
+            ? env.API_PLAYGROUND_ALLOW_PRIVATE === "true"
+            : (env.NODE_ENV || "development") !== "production",
+    },
 
     // Background jobs (doc generation runs). See backend/jobs/worker.js.
     jobs: {
@@ -62,11 +76,6 @@ const config = {
     email: {
         user: env.EMAIL_USER,
         pass: env.EMAIL_PASS,
-    },
-
-    github: {
-        // Secret set on the repo's GitHub webhook. Push-triggered updates are off without it.
-        webhookSecret: env.GITHUB_WEBHOOK_SECRET || "",
     },
 
     // Bring-your-own-key: users' AI provider keys are encrypted with this master key.
@@ -117,6 +126,9 @@ function logOptionalFeatures(log = console.log) {
     }
     if (!config.preview.enabled) {
         log("[Config] Anonymous free preview disabled: set PREVIEW_AI_PROVIDER and PREVIEW_AI_API_KEY to enable it.");
+    }
+    if (process.env.GITHUB_WEBHOOK_SECRET) {
+        log("[Config] GITHUB_WEBHOOK_SECRET is no longer used: each project now has its own webhook secret (project Settings → Integrations). Update your repositories' webhooks and remove the variable.");
     }
     if (!config.razorpay.enabled) {
         log("[Config] Billing disabled: set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable it.");
