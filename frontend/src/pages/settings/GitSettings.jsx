@@ -4,13 +4,13 @@ import { apiFetch } from "../../lib/api";
 
 const API_URL = import.meta.env.VITE_API_URL;
 
-const rowStyle = { display: "flex", gap: "60px", borderBottom: "1px solid #e2e8f0", paddingBottom: "32px", marginBottom: "32px" };
-const leftColStyle = { width: "280px", flexShrink: 0 };
+const rowStyle = { display: "flex", flexWrap: "wrap", gap: "24px 48px", borderBottom: "1px solid #e2e8f0", paddingBottom: "32px", marginBottom: "32px" };
+const leftColStyle = { flex: "0 1 240px", minWidth: "200px" };
 const h4Style = { fontSize: "14px", fontWeight: "600", color: "#0f172a", margin: "0 0 4px 0" };
 const subStyle = { fontSize: "13px", color: "#64748b", margin: 0, lineHeight: "1.5" };
 const fieldStyle = { display: "flex", alignItems: "center", border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden", maxWidth: "520px", marginBottom: "12px" };
-const valueStyle = { flex: 1, backgroundColor: "#f8fafc", padding: "10px 14px", fontSize: "13px", color: "#0f172a", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-const fieldButtonStyle = { padding: "10px 14px", backgroundColor: "#ffffff", border: "none", borderLeft: "1px solid #e2e8f0", fontSize: "13px", fontWeight: "500", color: "#475569", cursor: "pointer" };
+const valueStyle = { flex: 1, minWidth: 0, backgroundColor: "#f8fafc", padding: "10px 14px", fontSize: "13px", color: "#0f172a", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+const fieldButtonStyle = { flexShrink: 0, padding: "10px 14px", backgroundColor: "#ffffff", border: "none", borderLeft: "1px solid #e2e8f0", fontSize: "13px", fontWeight: "500", color: "#475569", cursor: "pointer" };
 
 function CopyField({ label, value, secret, testId }) {
   const [shown, setShown] = useState(!secret);
@@ -68,7 +68,7 @@ export default function GitSettings() {
           <h4 style={h4Style}>Update docs on every push</h4>
           <p style={subStyle}>When you push to GitHub, DocGen rewrites the pages for the files you changed, using your AI provider.</p>
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: "1 1 320px", minWidth: 0 }}>
           {state.status === "loading" && <p style={subStyle}>Loading…</p>}
           {state.status === "error" && <p role="alert" style={{ ...subStyle, color: "#b91c1c" }}>{state.error}</p>}
           {state.status === "ready" && (
